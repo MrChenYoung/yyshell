@@ -45,7 +45,7 @@ YYShell 是一款基于 Tauri + React + TypeScript 开发的跨平台 SSH 终端
 
 ```bash
 # 克隆仓库
-git clone https://github.com/YOUR_USERNAME/yyshell.git
+git clone https://github.com/mrchenyoung/yyshell.git
 cd yyshell
 
 # 安装依赖
