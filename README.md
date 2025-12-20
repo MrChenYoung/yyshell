@@ -105,7 +105,13 @@ npm run tauri build
 
 ## 截图
 
-*待添加*
+<p align="center">
+  <img src="screenshots/1.png" alt="YYShell Screenshot 1" width="800">
+</p>
+
+<p align="center">
+  <img src="screenshots/2.png" alt="YYShell Screenshot 2" width="800">
+</p>
 
 ## 贡献
 
