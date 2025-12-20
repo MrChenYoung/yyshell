@@ -261,6 +261,74 @@ export function ServerDialog({ open, onOpenChange, editingServer }: ServerDialog
                         </div>
                     )}
 
+                    {formData.auth_type === "Key" && (
+                        <>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="private_key_path" className="text-right">
+                                    私钥路径 *
+                                </Label>
+                                <div className="col-span-3 flex gap-2">
+                                    <Input
+                                        id="private_key_path"
+                                        placeholder="~/.ssh/id_rsa"
+                                        value={formData.private_key_path || ""}
+                                        onChange={(e) => handleChange("private_key_path", e.target.value)}
+                                        className="flex-1"
+                                    />
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={async () => {
+                                            try {
+                                                const { open } = await import('@tauri-apps/plugin-dialog');
+                                                const selected = await open({
+                                                    multiple: false,
+                                                    directory: false,
+                                                    title: "选择私钥文件",
+                                                    defaultPath: "~/.ssh",
+                                                });
+                                                if (selected && typeof selected === 'string') {
+                                                    handleChange("private_key_path", selected);
+                                                }
+                                            } catch (err) {
+                                                console.error('Failed to open file dialog:', err);
+                                            }
+                                        }}
+                                    >
+                                        浏览
+                                    </Button>
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="passphrase" className="text-right">
+                                    密码短语
+                                </Label>
+                                <div className="col-span-3 relative">
+                                    <Input
+                                        id="passphrase"
+                                        type={showPassword ? "text" : "password"}
+                                        placeholder="私钥密码（可选）"
+                                        value={formData.password || ""}
+                                        onChange={(e) => handleChange("password", e.target.value)}
+                                        className="pr-10"
+                                    />
+                                    <button
+                                        type="button"
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                                        onClick={() => setShowPassword(!showPassword)}
+                                    >
+                                        {showPassword ? (
+                                            <EyeOff className="w-4 h-4" />
+                                        ) : (
+                                            <Eye className="w-4 h-4" />
+                                        )}
+                                    </button>
+                                </div>
+                            </div>
+                        </>
+                    )}
+
                     <div className="grid grid-cols-4 items-center gap-4">
                         <Label htmlFor="group" className="text-right">
                             分组
