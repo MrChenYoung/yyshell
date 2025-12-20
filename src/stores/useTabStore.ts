@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { invoke } from '@tauri-apps/api/core';
 
 export type TabType = 'terminal' | 'sftp' | 'welcome';
 
@@ -19,9 +20,27 @@ export interface Tab {
     quickConnectInfo?: QuickConnectInfo;
 }
 
+// Saved tab structure (without sensitive info like passwords)
+interface SavedTab {
+    id: string;
+    serverId: string | null;
+    title: string;
+    type: TabType;
+    quickConnectInfo?: {
+        host: string;
+        username: string;
+    };
+}
+
+interface TabStorage {
+    tabs: SavedTab[];
+    activeTabId: string | null;
+}
+
 interface TabState {
     tabs: Tab[];
     activeTabId: string | null;
+    isLoaded: boolean;
 
     // Actions
     addTab: (tab: Omit<Tab, 'id'>) => string;
@@ -29,11 +48,74 @@ interface TabState {
     setActiveTab: (id: string | null) => void;
     updateTab: (id: string, updates: Partial<Tab>) => void;
     getActiveTab: () => Tab | null;
+    loadTabs: () => Promise<void>;
+    saveTabs: () => Promise<void>;
 }
 
 export const useTabStore = create<TabState>((set, get) => ({
     tabs: [],
     activeTabId: null,
+    isLoaded: false,
+
+    loadTabs: async () => {
+        try {
+            const storage = await invoke<TabStorage>('load_tabs');
+            if (storage.tabs && storage.tabs.length > 0) {
+                // Convert saved tabs to full tabs (without connection, needs reconnect)
+                const restoredTabs: Tab[] = storage.tabs.map(saved => ({
+                    id: saved.id,
+                    connectionId: null, // Will need to reconnect
+                    serverId: saved.serverId,
+                    title: saved.title,
+                    type: saved.type,
+                    quickConnectInfo: saved.quickConnectInfo ? {
+                        host: saved.quickConnectInfo.host,
+                        username: saved.quickConnectInfo.username,
+                        password: undefined, // Password not persisted for security
+                    } : undefined,
+                }));
+                set({
+                    tabs: restoredTabs,
+                    activeTabId: storage.activeTabId,
+                    isLoaded: true
+                });
+            } else {
+                set({ isLoaded: true });
+            }
+        } catch (error) {
+            console.error('Failed to load tabs:', error);
+            set({ isLoaded: true });
+        }
+    },
+
+    saveTabs: async () => {
+        const state = get();
+        // Convert tabs to saved format (without sensitive data)
+        const savedTabs: SavedTab[] = state.tabs
+            .filter(tab => tab.serverId || tab.quickConnectInfo) // Only save tabs with connection info
+            .map(tab => ({
+                id: tab.id,
+                serverId: tab.serverId,
+                title: tab.title,
+                type: tab.type,
+                quickConnectInfo: tab.quickConnectInfo ? {
+                    host: tab.quickConnectInfo.host,
+                    username: tab.quickConnectInfo.username,
+                    // Password intentionally NOT saved
+                } : undefined,
+            }));
+
+        try {
+            await invoke('save_tabs', {
+                tabs: {
+                    tabs: savedTabs,
+                    activeTabId: state.activeTabId,
+                }
+            });
+        } catch (error) {
+            console.error('Failed to save tabs:', error);
+        }
+    },
 
     addTab: (tabData) => {
         const id = `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -43,6 +125,9 @@ export const useTabStore = create<TabState>((set, get) => ({
             tabs: [...state.tabs, newTab],
             activeTabId: id,
         }));
+
+        // Auto-save after adding tab
+        setTimeout(() => get().saveTabs(), 100);
 
         return id;
     },
@@ -69,10 +154,15 @@ export const useTabStore = create<TabState>((set, get) => ({
                 activeTabId: newActiveId,
             };
         });
+
+        // Auto-save after removing tab
+        setTimeout(() => get().saveTabs(), 100);
     },
 
     setActiveTab: (id) => {
         set({ activeTabId: id });
+        // Auto-save active tab
+        setTimeout(() => get().saveTabs(), 100);
     },
 
     updateTab: (id, updates) => {
@@ -81,6 +171,9 @@ export const useTabStore = create<TabState>((set, get) => ({
                 t.id === id ? { ...t, ...updates } : t
             ),
         }));
+
+        // Auto-save after updating tab
+        setTimeout(() => get().saveTabs(), 100);
     },
 
     getActiveTab: () => {
@@ -88,3 +181,8 @@ export const useTabStore = create<TabState>((set, get) => ({
         return state.tabs.find((t) => t.id === state.activeTabId) || null;
     },
 }));
+
+// Load tabs on app start
+if (typeof window !== 'undefined') {
+    useTabStore.getState().loadTabs();
+}

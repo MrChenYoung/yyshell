@@ -27,6 +27,7 @@ pub fn run() {
             storage::update_server, storage::delete_server, storage::test_connection,
             storage::load_settings, storage::save_settings,
             storage::load_groups, storage::save_groups,
+            storage::load_tabs, storage::save_tabs,
             commands::load_command_history, commands::add_command_history, commands::clear_command_history,
             commands::load_quick_commands, commands::save_quick_commands,
             commands::add_quick_command, commands::update_quick_command, commands::delete_quick_command

@@ -68,9 +68,9 @@ pub async fn init_sftp(
     id: String,
 ) -> Result<(), String> {
     // 1. Get credentials from main ssh state
-    let (host, user, pass) = {
-        let creds = state.credentials.lock().unwrap();
-        match creds.get(&id) {
+    let creds = {
+        let creds_lock = state.credentials.lock().unwrap();
+        match creds_lock.get(&id) {
             Some(c) => c.clone(),
             None => return Err("No credentials found".into()),
         }
@@ -79,15 +79,28 @@ pub async fn init_sftp(
     // Run blocking SFTP connection in background thread
     let sftp_conn = tokio::task::spawn_blocking(move || -> Result<SftpConnection, String> {
         // Connect
-        let tcp = TcpStream::connect(format!("{}:22", host)).map_err(|e| e.to_string())?;
+        let tcp = TcpStream::connect(format!("{}:22", creds.host)).map_err(|e| e.to_string())?;
         let mut sess = Session::new().unwrap();
         sess.set_tcp_stream(tcp);
         sess.handshake().map_err(|e| e.to_string())?;
 
-        if let Some(p) = &pass {
-            sess.userauth_password(&user, p).map_err(|e| e.to_string())?;
-        } else {
-            sess.userauth_agent(&user).map_err(|e| e.to_string())?;
+        // Auth based on type
+        match creds.auth_type.as_str() {
+            "Key" => {
+                let key_path = creds.private_key_path.as_ref().ok_or("Private key path not provided")?;
+                let path = std::path::Path::new(key_path);
+                sess.userauth_pubkey_file(&creds.user, None, path, creds.password.as_deref())
+                    .map_err(|e| format!("Key authentication failed: {}", e))?;
+            },
+            "Agent" => {
+                sess.userauth_agent(&creds.user)
+                    .map_err(|e| format!("SSH Agent authentication failed: {}", e))?;
+            },
+            _ => {
+                let pwd = creds.password.as_ref().ok_or("Password not provided")?;
+                sess.userauth_password(&creds.user, pwd)
+                    .map_err(|e| format!("Password authentication failed: {}", e))?;
+            }
         }
         
         if !sess.authenticated() {

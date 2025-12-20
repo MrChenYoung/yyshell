@@ -282,3 +282,67 @@ pub fn save_groups(app: AppHandle, groups: GroupSettings) -> Result<(), String> 
     Ok(())
 }
 
+// ============ Tabs Storage ============
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuickConnectInfo {
+    pub host: String,
+    pub username: String,
+    // Password is intentionally NOT persisted for security
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedTab {
+    pub id: String,
+    #[serde(rename = "serverId")]
+    pub server_id: Option<String>,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub tab_type: String, // "terminal" | "sftp" | "welcome"
+    #[serde(rename = "quickConnectInfo")]
+    pub quick_connect_info: Option<QuickConnectInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TabStorage {
+    pub tabs: Vec<SavedTab>,
+    #[serde(rename = "activeTabId")]
+    pub active_tab_id: Option<String>,
+}
+
+fn get_tabs_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    
+    fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+    
+    Ok(app_data_dir.join("tabs.json"))
+}
+
+#[tauri::command]
+pub fn load_tabs(app: AppHandle) -> Result<TabStorage, String> {
+    let path = get_tabs_path(&app)?;
+    
+    if !path.exists() {
+        return Ok(TabStorage::default());
+    }
+    
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let tabs: TabStorage = serde_json::from_str(&content).unwrap_or_default();
+    
+    Ok(tabs)
+}
+
+#[tauri::command]
+pub fn save_tabs(app: AppHandle, tabs: TabStorage) -> Result<(), String> {
+    let path = get_tabs_path(&app)?;
+    
+    let content = serde_json::to_string_pretty(&tabs).map_err(|e| e.to_string())?;
+    
+    fs::write(&path, content).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+

@@ -13,9 +13,19 @@ pub struct Connection {
     pub channel: Mutex<Option<ssh2::Channel>>,
 }
 
+/// Stored credentials for reconnection
+#[derive(Clone)]
+pub struct StoredCredentials {
+    pub host: String,
+    pub user: String,
+    pub password: Option<String>,
+    pub auth_type: String,
+    pub private_key_path: Option<String>,
+}
+
 pub struct AppState {
     pub connections: Mutex<HashMap<String, Arc<Connection>>>,
-    pub credentials: Mutex<HashMap<String, (String, String, Option<String>)>>, // host, user, pass
+    pub credentials: Mutex<HashMap<String, StoredCredentials>>,
 }
 
 impl Default for AppState {
@@ -199,16 +209,28 @@ pub async fn connect(
     host: String,
     user: String,
     password: Option<String>,
+    auth_type: Option<String>,
+    private_key_path: Option<String>,
 ) -> Result<String, String> {
     
-    // Store creds
-    state.credentials.lock().unwrap().insert(id.clone(), (host.clone(), user.clone(), password.clone()));
+    let auth = auth_type.unwrap_or_else(|| "Password".to_string());
+    
+    // Store creds for reconnection
+    state.credentials.lock().unwrap().insert(id.clone(), StoredCredentials {
+        host: host.clone(),
+        user: user.clone(),
+        password: password.clone(),
+        auth_type: auth.clone(),
+        private_key_path: private_key_path.clone(),
+    });
 
     // Clone values for the blocking task
     let id_clone = id.clone();
     let host_clone = host.clone();
     let user_clone = user.clone();
     let password_clone = password.clone();
+    let auth_clone = auth.clone();
+    let key_path_clone = private_key_path.clone();
 
     // Run blocking SSH operations in a separate thread pool
     let (conn, channel) = tokio::task::spawn_blocking(move || -> Result<(Arc<Connection>, ssh2::Channel), String> {
@@ -219,11 +241,36 @@ pub async fn connect(
         sess.set_tcp_stream(tcp);
         sess.handshake().map_err(|e| e.to_string())?;
 
-        // Auth
-        if let Some(pwd) = &password_clone {
-            sess.userauth_password(&user_clone, pwd).map_err(|e| e.to_string())?;
-        } else {
-            sess.userauth_agent(&user_clone).map_err(|e| e.to_string())?;
+        // Auth based on type
+        match auth_clone.as_str() {
+            "Key" => {
+                // Private key authentication
+                let key_path = key_path_clone.ok_or("Private key path not provided")?;
+                let key_path = std::path::Path::new(&key_path);
+                
+                // Try with password (passphrase) if provided, otherwise without
+                if let Some(passphrase) = &password_clone {
+                    sess.userauth_pubkey_file(&user_clone, None, key_path, Some(passphrase))
+                        .map_err(|e| format!("Key authentication failed: {}", e))?;
+                } else {
+                    sess.userauth_pubkey_file(&user_clone, None, key_path, None)
+                        .map_err(|e| format!("Key authentication failed: {}", e))?;
+                }
+            },
+            "Agent" => {
+                // SSH Agent authentication
+                sess.userauth_agent(&user_clone)
+                    .map_err(|e| format!("SSH Agent authentication failed: {}", e))?;
+            },
+            _ => {
+                // Password authentication (default)
+                if let Some(pwd) = &password_clone {
+                    sess.userauth_password(&user_clone, pwd)
+                        .map_err(|e| format!("Password authentication failed: {}", e))?;
+                } else {
+                    return Err("Password not provided for password authentication".into());
+                }
+            }
         }
         
         if !sess.authenticated() {
@@ -363,9 +410,9 @@ pub async fn start_monitoring(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    let (host, user, pass) = {
-        let creds = state.credentials.lock().unwrap();
-        match creds.get(&id) {
+    let creds = {
+        let creds_lock = state.credentials.lock().unwrap();
+        match creds_lock.get(&id) {
             Some(c) => c.clone(),
             None => return Err("No credentials found".into()),
         }
@@ -373,14 +420,28 @@ pub async fn start_monitoring(
 
     thread::spawn(move || {
         // New connection for monitoring
-        if let Ok(tcp) = TcpStream::connect(format!("{}:22", host)) {
+        if let Ok(tcp) = TcpStream::connect(format!("{}:22", creds.host)) {
             if let Ok(mut sess) = Session::new() {
                 sess.set_tcp_stream(tcp);
                 if sess.handshake().is_ok() {
-                    let auth_res = if let Some(p) = &pass {
-                        sess.userauth_password(&user, p)
-                    } else {
-                        sess.userauth_agent(&user)
+                    // Auth based on type
+                    let auth_res = match creds.auth_type.as_str() {
+                        "Key" => {
+                            if let Some(ref key_path) = creds.private_key_path {
+                                let path = std::path::Path::new(key_path);
+                                sess.userauth_pubkey_file(&creds.user, None, path, creds.password.as_deref())
+                            } else {
+                                Err(ssh2::Error::from_errno(ssh2::ErrorCode::Session(-1)))
+                            }
+                        },
+                        "Agent" => sess.userauth_agent(&creds.user),
+                        _ => {
+                            if let Some(ref pwd) = creds.password {
+                                sess.userauth_password(&creds.user, pwd)
+                            } else {
+                                Err(ssh2::Error::from_errno(ssh2::ErrorCode::Session(-1)))
+                            }
+                        }
                     };
 
                     if auth_res.is_ok() && sess.authenticated() {
@@ -507,9 +568,9 @@ pub async fn ssh_exec_command(
     command: String,
 ) -> Result<String, String> {
     // Get credentials to create a new exec channel
-    let (host, user, pass) = {
-        let creds = state.credentials.lock().unwrap();
-        match creds.get(&id) {
+    let creds = {
+        let creds_lock = state.credentials.lock().unwrap();
+        match creds_lock.get(&id) {
             Some(c) => c.clone(),
             None => return Err("No credentials found".into()),
         }
@@ -518,16 +579,28 @@ pub async fn ssh_exec_command(
     // Execute in blocking task
     tokio::task::spawn_blocking(move || -> Result<String, String> {
         // New connection for exec
-        let tcp = TcpStream::connect(format!("{}:22", host)).map_err(|e| e.to_string())?;
+        let tcp = TcpStream::connect(format!("{}:22", creds.host)).map_err(|e| e.to_string())?;
         let mut sess = Session::new().map_err(|e| e.to_string())?;
         sess.set_tcp_stream(tcp);
         sess.handshake().map_err(|e| e.to_string())?;
 
-        // Auth
-        if let Some(p) = &pass {
-            sess.userauth_password(&user, p).map_err(|e| e.to_string())?;
-        } else {
-            sess.userauth_agent(&user).map_err(|e| e.to_string())?;
+        // Auth based on type
+        match creds.auth_type.as_str() {
+            "Key" => {
+                let key_path = creds.private_key_path.as_ref().ok_or("Private key path not provided")?;
+                let path = std::path::Path::new(key_path);
+                sess.userauth_pubkey_file(&creds.user, None, path, creds.password.as_deref())
+                    .map_err(|e| format!("Key authentication failed: {}", e))?;
+            },
+            "Agent" => {
+                sess.userauth_agent(&creds.user)
+                    .map_err(|e| format!("SSH Agent authentication failed: {}", e))?;
+            },
+            _ => {
+                let pwd = creds.password.as_ref().ok_or("Password not provided")?;
+                sess.userauth_password(&creds.user, pwd)
+                    .map_err(|e| format!("Password authentication failed: {}", e))?;
+            }
         }
 
         if !sess.authenticated() {

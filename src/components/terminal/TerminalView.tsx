@@ -26,6 +26,8 @@ interface TerminalViewProps {
         username: string;
         password?: string;
         port?: number;
+        auth_type?: 'Password' | 'Key' | 'Agent';
+        private_key_path?: string;
     };
     onConnected?: () => void;
     onDisconnected?: () => void;
@@ -113,21 +115,25 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
         }
     };
 
-    const handleConnect = useCallback(async (connectHost?: string, connectUser?: string, connectPassword?: string) => {
+    const handleConnect = useCallback(async (connectHost?: string, connectUser?: string, connectPassword?: string, authType?: string, privateKeyPath?: string) => {
         const h = connectHost || host;
         const u = connectUser || user;
         const p = connectPassword ?? password;
+        const auth = authType || serverInfo?.auth_type || 'Password';
+        const keyPath = privateKeyPath || serverInfo?.private_key_path;
 
         if (!h || !u) return;
 
         setConnecting(true);
         try {
-            xtermRef.current?.writeln(`\r\n\x1b[1;33m正在连接 ${h}...\x1b[0m`);
+            xtermRef.current?.writeln(`\r\n\x1b[1;33m正在连接 ${h}...【${auth === 'Password' ? '密码' : auth === 'Key' ? '密钥' : 'Agent'}认证】\x1b[0m`);
             await invoke("connect", {
                 id: connectionId,
                 host: h,
                 user: u,
-                password: p || null
+                password: p || null,
+                authType: auth,
+                privateKeyPath: keyPath || null
             });
 
             // Start monitoring after connection
@@ -340,7 +346,9 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
                         id: connectionId,
                         host: serverInfo.host,
                         user: serverInfo.username,
-                        password: serverInfo.password || null
+                        password: serverInfo.password || null,
+                        authType: serverInfo.auth_type || 'Password',
+                        privateKeyPath: serverInfo.private_key_path || null
                     });
 
                     // Start monitoring after connection
@@ -387,11 +395,14 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
             xtermRef.current?.writeln('\r\n\x1b[1;33m正在重新连接...\x1b[0m');
 
             try {
+                // Get auth info from serverInfo if available
                 await invoke("connect", {
                     id: connectionId,
                     host: event.payload.host,
                     user: event.payload.username,
-                    password: event.payload.password
+                    password: event.payload.password,
+                    authType: serverInfo?.auth_type || 'Password',
+                    privateKeyPath: serverInfo?.private_key_path || null
                 });
 
                 // Start monitoring after connection
