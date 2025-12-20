@@ -123,6 +123,8 @@ export function AppShell() {
             username: server.username,
             password: server.password,
             port: server.port,
+            auth_type: server.auth_type,
+            private_key_path: server.private_key_path,
         };
     }, [servers]);
 
