@@ -215,7 +215,7 @@ export const useTransferStore = create<TransferState>((set, get) => ({
 
     initListeners: () => {
         // Listen for upload progress
-        listen<TransferProgressPayload>('upload-progress', (event) => {
+        listen<TransferProgressPayload>('sftp-upload-progress', (event) => {
             const { id, file_name, uploaded, total, percent } = event.payload;
             const state = get();
 
@@ -236,7 +236,7 @@ export const useTransferStore = create<TransferState>((set, get) => ({
         });
 
         // Listen for download progress
-        listen<TransferProgressPayload>('download-progress', (event) => {
+        listen<TransferProgressPayload>('sftp-download-progress', (event) => {
             const { id, file_name, downloaded, total, percent } = event.payload;
             const state = get();
 
