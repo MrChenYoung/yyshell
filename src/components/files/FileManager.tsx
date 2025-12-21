@@ -501,50 +501,52 @@ export function FileManager({ connectionId }: FileManagerProps) {
         };
     }, [connectionId, currentPath, loadDirectory]);
 
-    // Listen for file drop (drag and drop upload)
+    // Listen for file drop (drag and drop upload) using Tauri 2.0 API
     useEffect(() => {
         if (!connectionId || !sftpInitialized) return;
 
-        // Listen for file drop hover (visual feedback)
-        const unlistenHover = listen('tauri://file-drop-hover', () => {
-            setIsDraggingOver(true);
-        });
+        let unlistenFn: (() => void) | null = null;
 
-        // Listen for drag leave
-        const unlistenCancel = listen('tauri://file-drop-cancelled', () => {
-            setIsDraggingOver(false);
-        });
+        // Import and use the webview API
+        import('@tauri-apps/api/webview').then(({ getCurrentWebview }) => {
+            getCurrentWebview().onDragDropEvent((event) => {
+                if (event.payload.type === 'over') {
+                    setIsDraggingOver(true);
+                } else if (event.payload.type === 'drop') {
+                    setIsDraggingOver(false);
+                    const droppedPaths = event.payload.paths;
+                    console.log('File drop received:', droppedPaths);
+                    if (droppedPaths && droppedPaths.length > 0) {
+                        for (const filePath of droppedPaths) {
+                            const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || 'file';
+                            const remotePath = currentPath === '/'
+                                ? '/' + fileName
+                                : currentPath + '/' + fileName;
 
-        // Listen for file drop - Tauri 2.0 payload is string[] (array of file paths)
-        const unlistenDrop = listen<string[]>('tauri://file-drop', (event) => {
-            setIsDraggingOver(false);
-            const droppedPaths = event.payload;
-            console.log('File drop received:', droppedPaths);
-            if (droppedPaths && droppedPaths.length > 0) {
-                // Add each file to transfer queue
-                for (const filePath of droppedPaths) {
-                    const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || 'file';
-                    const remotePath = currentPath === '/'
-                        ? '/' + fileName
-                        : currentPath + '/' + fileName;
-
-                    console.log('Adding upload transfer:', { filePath, remotePath });
-                    addTransfer({
-                        type: 'upload',
-                        connectionId,
-                        fileName,
-                        localPath: filePath,
-                        remotePath,
-                        totalBytes: 0,
-                    });
+                            console.log('Adding upload transfer:', { filePath, remotePath });
+                            addTransfer({
+                                type: 'upload',
+                                connectionId,
+                                fileName,
+                                localPath: filePath,
+                                remotePath,
+                                totalBytes: 0,
+                            });
+                        }
+                    }
+                } else {
+                    // cancelled / leave
+                    setIsDraggingOver(false);
                 }
-            }
+            }).then(fn => {
+                unlistenFn = fn;
+            });
         });
 
         return () => {
-            unlistenHover.then(fn => fn());
-            unlistenCancel.then(fn => fn());
-            unlistenDrop.then(fn => fn());
+            if (unlistenFn) {
+                unlistenFn();
+            }
         };
     }, [connectionId, sftpInitialized, currentPath, addTransfer]);
 
