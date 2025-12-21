@@ -3,7 +3,7 @@ import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { listen, emit, UnlistenFn } from "@tauri-apps/api/event";
 import "xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -157,6 +157,10 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
 
             xtermRef.current?.writeln(`\r\n\x1b[1;32m已连接！\x1b[0m\r\n`);
             xtermRef.current?.focus();
+
+            // Emit ssh-connected event for FileManager to reinitialize SFTP
+            emit('ssh-connected', { connectionId });
+
             onConnected?.();
         } catch (e) {
             xtermRef.current?.writeln(`\r\n\x1b[1;31m错误: ${e}\x1b[0m\r\n`);
@@ -365,6 +369,10 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
 
                     xtermRef.current?.writeln(`\r\n\x1b[1;32m✓ 重新连接成功！\x1b[0m\r\n`);
                     xtermRef.current?.focus();
+
+                    // Emit ssh-connected event for FileManager to reinitialize SFTP
+                    emit('ssh-connected', { connectionId });
+
                     return; // Success, exit retry loop
 
                 } catch (err) {
@@ -419,6 +427,9 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
 
                 xtermRef.current?.writeln('\r\n\x1b[1;32m重新连接成功！\x1b[0m\r\n');
                 xtermRef.current?.focus();
+
+                // Emit ssh-connected event for FileManager to reinitialize SFTP
+                emit('ssh-connected', { connectionId });
             } catch (err) {
                 xtermRef.current?.writeln(`\r\n\x1b[1;31m重新连接失败: ${err}\x1b[0m\r\n`);
 

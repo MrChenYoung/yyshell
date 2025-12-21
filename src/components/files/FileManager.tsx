@@ -561,6 +561,28 @@ export function FileManager({ connectionId }: FileManagerProps) {
         }
     }, [sftpInitialized, error, loading, connectionId, initSftp]);
 
+    // Listen for SSH connection success events to reinitialize SFTP
+    useEffect(() => {
+        const unlisten = listen<{ connectionId: string }>('ssh-connected', (event) => {
+            // Check if this event is for our current connection
+            if (event.payload.connectionId === connectionId) {
+                // Reset initialized state and reinitialize SFTP
+                initializedConnectionsRef.current.delete(connectionId);
+                setSftpInitialized(false);
+                setError(null);
+                // Small delay to ensure SSH is fully ready
+                setTimeout(() => {
+                    initializedConnectionsRef.current.add(connectionId);
+                    initSftp();
+                }, 500);
+            }
+        });
+
+        return () => {
+            unlisten.then(fn => fn());
+        };
+    }, [connectionId, initSftp]);
+
     useEffect(() => {
         if (sftpInitialized && connectionId) {
             loadDirectory(currentPath);
