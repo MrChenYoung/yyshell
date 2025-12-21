@@ -438,6 +438,25 @@ export function FileManager({ connectionId }: FileManagerProps) {
         };
     }, [connectionId, initSftp]);
 
+    // Listen for transfer completion to refresh file list
+    useEffect(() => {
+        const unlisten = listen<{ connectionId: string; type: string; remotePath: string }>('transfer-completed', (event) => {
+            // Check if this event is for our current connection and it's an upload
+            if (event.payload.connectionId === connectionId && event.payload.type === 'upload') {
+                // Get the parent directory of the uploaded file
+                const parentDir = event.payload.remotePath.split('/').slice(0, -1).join('/') || '/';
+                // If we're viewing the same directory, refresh
+                if (parentDir === currentPath) {
+                    loadDirectory(currentPath, true);
+                }
+            }
+        });
+
+        return () => {
+            unlisten.then(fn => fn());
+        };
+    }, [connectionId, currentPath, loadDirectory]);
+
     useEffect(() => {
         if (sftpInitialized && connectionId) {
             loadDirectory(currentPath);

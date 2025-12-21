@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { listen, emit, UnlistenFn } from '@tauri-apps/api/event';
+import { useDirectoryCacheStore } from './useDirectoryCacheStore';
 
 export type TransferType = 'upload' | 'download';
 export type TransferStatus = 'pending' | 'transferring' | 'completed' | 'failed' | 'cancelled';
@@ -199,6 +200,18 @@ export const useTransferStore = create<TransferState>((set, get) => ({
                         progress: 100,
                         endTime: Date.now(),
                     });
+
+                    // Refresh file list after upload completes
+                    if (task.type === 'upload') {
+                        const parentDir = task.remotePath.split('/').slice(0, -1).join('/') || '/';
+                        useDirectoryCacheStore.getState().invalidatePath(task.connectionId, parentDir);
+                        // Emit event to refresh file list
+                        emit('transfer-completed', {
+                            connectionId: task.connectionId,
+                            type: task.type,
+                            remotePath: task.remotePath,
+                        });
+                    }
                 } catch (e) {
                     const errorMsg = String(e);
                     // Check if it was cancelled
