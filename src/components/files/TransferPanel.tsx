@@ -27,6 +27,19 @@ function formatSpeed(bytesPerSecond: number): string {
     return parseFloat((bytesPerSecond / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
+function formatTime(seconds: number): string {
+    if (seconds <= 0 || !isFinite(seconds)) return '--';
+    if (seconds < 60) return `${Math.round(seconds)} 秒`;
+    if (seconds < 3600) {
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.round(seconds % 60);
+        return `${mins} 分 ${secs} 秒`;
+    }
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    return `${hours} 时 ${mins} 分`;
+}
+
 function getStatusIcon(status: TransferStatus) {
     switch (status) {
         case 'pending':
@@ -90,6 +103,9 @@ function TransferItem({ task }: { task: TransferTask }) {
                             </span>
                             <span className="text-[10px] text-cyan-400">
                                 {formatSpeed(task.speed)}
+                            </span>
+                            <span className="text-[10px] text-yellow-400">
+                                剩余 {formatTime(task.estimatedTimeRemaining)}
                             </span>
                             <span className="text-[10px] text-muted-foreground">
                                 {task.progress.toFixed(0)}%

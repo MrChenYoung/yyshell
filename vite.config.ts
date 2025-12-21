@@ -2,7 +2,6 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 
-// @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
@@ -32,6 +31,27 @@ export default defineConfig(async () => ({
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
+    },
+  },
+  // Build optimization with code splitting
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // React core
+          'react-vendor': ['react', 'react-dom'],
+          // Tauri API
+          'tauri-vendor': [
+            '@tauri-apps/api',
+            '@tauri-apps/plugin-dialog',
+            '@tauri-apps/plugin-opener',
+          ],
+          // Terminal
+          'xterm-vendor': ['xterm'],
+          // Icons
+          'lucide-vendor': ['lucide-react'],
+        },
+      },
     },
   },
 }));

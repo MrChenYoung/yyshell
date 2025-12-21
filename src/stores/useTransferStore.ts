@@ -17,6 +17,7 @@ export interface TransferTask {
     transferredBytes: number;
     progress: number;
     speed: number; // bytes per second
+    estimatedTimeRemaining: number; // seconds remaining
     status: TransferStatus;
     error?: string;
     startTime?: number;
@@ -48,7 +49,7 @@ interface TransferState {
     unlistenDownload: UnlistenFn | null;
 
     // Actions
-    addTransfer: (task: Omit<TransferTask, 'id' | 'status' | 'progress' | 'transferredBytes' | 'speed'>) => string;
+    addTransfer: (task: Omit<TransferTask, 'id' | 'status' | 'progress' | 'transferredBytes' | 'speed' | 'estimatedTimeRemaining'>) => string;
     updateTransfer: (id: string, updates: Partial<TransferTask>) => void;
     removeTransfer: (id: string) => void;
     cancelTransfer: (id: string) => void;
@@ -77,6 +78,7 @@ export const useTransferStore = create<TransferState>((set, get) => ({
             progress: 0,
             transferredBytes: 0,
             speed: 0,
+            estimatedTimeRemaining: 0,
         };
 
         set((state) => ({
@@ -280,11 +282,16 @@ export const useTransferStore = create<TransferState>((set, get) => ({
                     newSpeed = 0;
                 }
 
+                // Calculate estimated time remaining
+                const remainingBytes = total - bytes;
+                const estimatedTimeRemaining = newSpeed > 0 ? remainingBytes / newSpeed : 0;
+
                 get().updateTransfer(task.id, {
                     transferredBytes: bytes,
                     totalBytes: total,
                     progress: percent,
                     speed: newSpeed,
+                    estimatedTimeRemaining,
                 });
             }
         }).then((unlisten) => {
@@ -333,11 +340,16 @@ export const useTransferStore = create<TransferState>((set, get) => ({
                     newSpeed = 0;
                 }
 
+                // Calculate estimated time remaining
+                const remainingBytes = total - bytes;
+                const estimatedTimeRemaining = newSpeed > 0 ? remainingBytes / newSpeed : 0;
+
                 get().updateTransfer(task.id, {
                     transferredBytes: bytes,
                     totalBytes: total,
                     progress: percent,
                     speed: newSpeed,
+                    estimatedTimeRemaining,
                 });
             }
         }).then((unlisten) => {

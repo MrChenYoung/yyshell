@@ -7,7 +7,7 @@ import {
     Download, Upload, FileText, Image, Archive, Code, Film,
     ChevronRight, ChevronDown, HardDrive, Trash2, Plus,
     FolderPlus, FilePlus, Scissors, Copy, Clipboard, Edit, X,
-    List, LayoutGrid
+    List, LayoutGrid, ArrowDown, ArrowUpIcon
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -135,6 +135,47 @@ export function FileManager({ connectionId }: FileManagerProps) {
     // View mode state (list or grid)
     const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
 
+    // Sort state
+    type SortKey = 'name' | 'size' | 'type' | 'mtime';
+    const [sortBy, setSortBy] = useState<SortKey>('name');
+    const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+
+    // Sorted files (directories always first)
+    const sortedFiles = [...files].sort((a, b) => {
+        // Directories always come first
+        if (a.is_dir && !b.is_dir) return -1;
+        if (!a.is_dir && b.is_dir) return 1;
+
+        let comparison = 0;
+        switch (sortBy) {
+            case 'name':
+                comparison = a.name.localeCompare(b.name);
+                break;
+            case 'size':
+                comparison = (a.size || 0) - (b.size || 0);
+                break;
+            case 'type':
+                const extA = a.name.split('.').pop()?.toLowerCase() || '';
+                const extB = b.name.split('.').pop()?.toLowerCase() || '';
+                comparison = extA.localeCompare(extB);
+                break;
+            case 'mtime':
+                comparison = (a.mtime || 0) - (b.mtime || 0);
+                break;
+        }
+        return sortOrder === 'asc' ? comparison : -comparison;
+    });
+
+    // Toggle sort
+    const handleSort = (key: SortKey) => {
+        if (sortBy === key) {
+            setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+        } else {
+            setSortBy(key);
+            setSortOrder('asc');
+        }
+    };
+
     // Clipboard state for copy/cut/paste operations - includes source connectionId for cross-server support
     const [clipboardItem, setClipboardItem] = useState<{
         connectionId: string;  // Source server connection ID
@@ -158,6 +199,9 @@ export function FileManager({ connectionId }: FileManagerProps) {
         total: number;
         percent: number;
     } | null>(null);
+
+    // Drag and drop state
+    const [isDraggingOver, setIsDraggingOver] = useState(false);
 
     // Wrapper to update current path in both state and cache
     const setCurrentPath = useCallback((path: string) => {
@@ -456,6 +500,51 @@ export function FileManager({ connectionId }: FileManagerProps) {
             unlisten.then(fn => fn());
         };
     }, [connectionId, currentPath, loadDirectory]);
+
+    // Listen for file drop (drag and drop upload)
+    useEffect(() => {
+        if (!connectionId || !sftpInitialized) return;
+
+        // Listen for file drop hover (visual feedback)
+        const unlistenHover = listen<{ paths: string[]; position: { x: number; y: number } }>('tauri://file-drop-hover', () => {
+            setIsDraggingOver(true);
+        });
+
+        // Listen for drag leave
+        const unlistenCancel = listen('tauri://file-drop-cancelled', () => {
+            setIsDraggingOver(false);
+        });
+
+        // Listen for file drop
+        const unlistenDrop = listen<{ paths: string[]; position: { x: number; y: number } }>('tauri://file-drop', (event) => {
+            setIsDraggingOver(false);
+            const droppedPaths = event.payload.paths;
+            if (droppedPaths && droppedPaths.length > 0) {
+                // Add each file to transfer queue
+                for (const filePath of droppedPaths) {
+                    const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || 'file';
+                    const remotePath = currentPath === '/'
+                        ? '/' + fileName
+                        : currentPath + '/' + fileName;
+
+                    addTransfer({
+                        type: 'upload',
+                        connectionId,
+                        fileName,
+                        localPath: filePath,
+                        remotePath,
+                        totalBytes: 0,
+                    });
+                }
+            }
+        });
+
+        return () => {
+            unlistenHover.then(fn => fn());
+            unlistenCancel.then(fn => fn());
+            unlistenDrop.then(fn => fn());
+        };
+    }, [connectionId, sftpInitialized, currentPath, addTransfer]);
 
     useEffect(() => {
         if (sftpInitialized && connectionId) {
@@ -1069,7 +1158,16 @@ export function FileManager({ connectionId }: FileManagerProps) {
 
                 <ContextMenu>
                     <ContextMenuTrigger asChild>
-                        <div className="flex-1 flex flex-col min-w-0">
+                        <div className={"flex-1 flex flex-col min-w-0 relative transition-colors " + (isDraggingOver ? "bg-primary/10 border-2 border-dashed border-primary" : "")}>
+                            {/* Drag overlay */}
+                            {isDraggingOver && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-primary/20 z-10 pointer-events-none">
+                                    <div className="text-center">
+                                        <Upload className="w-12 h-12 mx-auto text-primary mb-2" />
+                                        <p className="text-sm font-medium text-primary">松开以上传文件</p>
+                                    </div>
+                                </div>
+                            )}
                             <ScrollArea className="flex-1">
                                 {!sftpInitialized ? (
                                     // SFTP not initialized yet - show loading, waiting, or error
@@ -1103,7 +1201,7 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                 ) : viewMode === 'grid' ? (
                                     /* Grid View */
                                     <div className="p-1 grid grid-cols-6 gap-1">
-                                        {files.map((file) => (
+                                        {sortedFiles.map((file) => (
                                             <ContextMenu key={file.name}>
                                                 <ContextMenuTrigger asChild>
                                                     <div
@@ -1200,14 +1298,46 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                     <table className="w-full text-xs">
                                         <thead className="sticky top-0 bg-card border-b border-border/30">
                                             <tr className="text-muted-foreground text-left">
-                                                <th className="px-2 py-1.5 font-medium">文件名</th>
-                                                <th className="px-2 py-1.5 font-medium w-20 text-right">大小</th>
-                                                <th className="px-2 py-1.5 font-medium w-16 text-center">类型</th>
-                                                <th className="px-2 py-1.5 font-medium w-32 text-right">修改时间</th>
+                                                <th
+                                                    className="px-2 py-1.5 font-medium cursor-pointer hover:text-foreground select-none"
+                                                    onClick={() => handleSort('name')}
+                                                >
+                                                    <span className="flex items-center gap-1">
+                                                        文件名
+                                                        {sortBy === 'name' && (sortOrder === 'asc' ? <ArrowUpIcon className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
+                                                    </span>
+                                                </th>
+                                                <th
+                                                    className="px-2 py-1.5 font-medium w-20 text-right cursor-pointer hover:text-foreground select-none"
+                                                    onClick={() => handleSort('size')}
+                                                >
+                                                    <span className="flex items-center justify-end gap-1">
+                                                        大小
+                                                        {sortBy === 'size' && (sortOrder === 'asc' ? <ArrowUpIcon className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
+                                                    </span>
+                                                </th>
+                                                <th
+                                                    className="px-2 py-1.5 font-medium w-16 text-center cursor-pointer hover:text-foreground select-none"
+                                                    onClick={() => handleSort('type')}
+                                                >
+                                                    <span className="flex items-center justify-center gap-1">
+                                                        类型
+                                                        {sortBy === 'type' && (sortOrder === 'asc' ? <ArrowUpIcon className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
+                                                    </span>
+                                                </th>
+                                                <th
+                                                    className="px-2 py-1.5 font-medium w-32 text-right cursor-pointer hover:text-foreground select-none"
+                                                    onClick={() => handleSort('mtime')}
+                                                >
+                                                    <span className="flex items-center justify-end gap-1">
+                                                        修改时间
+                                                        {sortBy === 'mtime' && (sortOrder === 'asc' ? <ArrowUpIcon className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
+                                                    </span>
+                                                </th>
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {files.map((file) => (
+                                            {sortedFiles.map((file) => (
                                                 <ContextMenu key={file.name}>
                                                     <ContextMenuTrigger asChild>
                                                         <tr
