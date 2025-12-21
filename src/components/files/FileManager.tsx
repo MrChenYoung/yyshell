@@ -31,6 +31,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { FileEditor } from "./FileEditor";
 import { ImagePreview } from "./ImagePreview";
+import { TransferPanel } from "./TransferPanel";
+import { useTransferStore } from "@/stores/useTransferStore";
 
 interface FileEntry {
     name: string;
@@ -203,6 +205,10 @@ export function FileManager({ connectionId }: FileManagerProps) {
     // File preview/editor state
     const [editorFile, setEditorFile] = useState<{ path: string; name: string } | null>(null);
     const [previewImage, setPreviewImage] = useState<{ path: string; name: string } | null>(null);
+
+    // Transfer panel state
+    const [transferPanelExpanded, setTransferPanelExpanded] = useState(true);
+    const { addTransfer } = useTransferStore();
     // Opening file state with progress
     const [openingFile, setOpeningFile] = useState<{
         name: string;
@@ -776,57 +782,25 @@ export function FileManager({ connectionId }: FileManagerProps) {
 
             if (!selected || selected.length === 0) return;
 
-            setIsUploading(true);
-            setError(null);
-            uploadCancelledRef.current = false; // Reset cancel flag
-            const totalFiles = selected.length;
-
-            for (let i = 0; i < selected.length; i++) {
-                // Check if upload was cancelled
-                if (uploadCancelledRef.current) {
-                    console.log('Upload cancelled by user');
-                    break;
-                }
-
-                const filePath = selected[i];
+            // Add each file to the transfer queue
+            for (const filePath of selected) {
                 const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || 'file';
                 const remotePath = currentPath === '/'
                     ? '/' + fileName
                     : currentPath + '/' + fileName;
 
-                // Update progress before each file
-                setUploadProgress({
-                    current: i + 1,
-                    total: totalFiles,
+                addTransfer({
+                    type: 'upload',
+                    connectionId,
                     fileName,
-                    uploaded: 0,
-                    fileSize: 0,
-                    percent: 0,
-                    speed: 0,
-                });
-
-                await invoke('sftp_upload_file', {
-                    id: connectionId,
                     localPath: filePath,
-                    remotePath: remotePath,
+                    remotePath,
+                    totalBytes: 0, // Will be updated during transfer
                 });
             }
-
-            // Invalidate cache and refresh after upload
-            const { invalidatePath } = useDirectoryCacheStore.getState();
-            invalidatePath(connectionId, currentPath);
-            loadDirectory(currentPath, true);
         } catch (err) {
-            const errorMsg = String(err);
-            // Don't show error for user-initiated cancellation
-            if (!errorMsg.includes('Upload cancelled') && !uploadCancelledRef.current) {
-                console.error('Upload failed:', err);
-                setError(errorMsg);
-            }
-        } finally {
-            setIsUploading(false);
-            setUploadProgress(null);
-            uploadCancelledRef.current = false;
+            console.error('Failed to select files:', err);
+            setError(String(err));
         }
     };
 
@@ -937,21 +911,18 @@ export function FileManager({ connectionId }: FileManagerProps) {
 
             if (!localPath) return;
 
-            await invoke('sftp_download_file', {
-                id: connectionId,
-                remotePath,
+            // Add to transfer queue
+            addTransfer({
+                type: 'download',
+                connectionId,
+                fileName: file.name,
                 localPath,
+                remotePath,
+                totalBytes: file.size || 0,
             });
         } catch (err) {
-            const errorMsg = String(err);
-            // Don't show error for user-initiated cancellation
-            if (!errorMsg.includes('Download cancelled')) {
-                console.error('Download failed:', err);
-                setError(errorMsg);
-            }
-        } finally {
-            // Clear download progress after completion or error
-            setDownloadProgress(null);
+            console.error('Failed to start download:', err);
+            setError(String(err));
         }
     };
 
@@ -1629,6 +1600,12 @@ export function FileManager({ connectionId }: FileManagerProps) {
                     </div>
                 </div>
             )}
+
+            {/* Transfer Panel */}
+            <TransferPanel
+                isExpanded={transferPanelExpanded}
+                onToggleExpand={() => setTransferPanelExpanded(prev => !prev)}
+            />
 
             {/* File Editor (Monaco) */}
             {editorFile && connectionId && (
