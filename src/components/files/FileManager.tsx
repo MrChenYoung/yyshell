@@ -1268,28 +1268,28 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                     </div>
                                 ) : viewMode === 'grid' ? (
                                     /* Grid View */
-                                    <div className="p-2 grid grid-cols-4 gap-2">
+                                    <div className="p-1 grid grid-cols-6 gap-1">
                                         {files.map((file) => (
                                             <ContextMenu key={file.name}>
                                                 <ContextMenuTrigger asChild>
                                                     <div
-                                                        className={"flex flex-col items-center p-2 rounded-lg cursor-pointer transition-colors hover:bg-primary/10" + (selectedFile === file.name ? " bg-primary/20" : "")}
+                                                        className={"flex flex-col items-center p-1.5 rounded cursor-pointer transition-colors hover:bg-primary/10" + (selectedFile === file.name ? " bg-primary/20" : "")}
                                                         onClick={() => setSelectedFile(file.name)}
                                                         onDoubleClick={() => handleFileDoubleClick(file)}
                                                         onContextMenu={(e) => e.stopPropagation()}
                                                     >
-                                                        <div className="w-10 h-10 flex items-center justify-center mb-1">
+                                                        <div className="w-7 h-7 flex items-center justify-center mb-0.5">
                                                             {file.is_dir ? (
-                                                                <Folder className="w-8 h-8 text-yellow-400" />
+                                                                <Folder className="w-6 h-6 text-yellow-400" />
                                                             ) : (
-                                                                <File className="w-8 h-8 text-gray-400" />
+                                                                <File className="w-6 h-6 text-gray-400" />
                                                             )}
                                                         </div>
-                                                        <span className={"text-[10px] text-center truncate w-full" + (file.is_dir ? " text-yellow-200" : "")}>
+                                                        <span className={"text-[9px] text-center truncate w-full leading-tight" + (file.is_dir ? " text-yellow-200" : "")}>
                                                             {file.name}
                                                         </span>
                                                         {!file.is_dir && (
-                                                            <span className="text-[9px] text-muted-foreground">
+                                                            <span className="text-[8px] text-muted-foreground">
                                                                 {formatFileSize(file.size)}
                                                             </span>
                                                         )}
