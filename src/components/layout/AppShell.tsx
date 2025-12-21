@@ -95,17 +95,26 @@ export function AppShell() {
         const existingTab = tabs.find(t => t.serverId === server.id && t.type === 'terminal');
         if (existingTab) {
             setActiveTab(existingTab.id);
-            // If tab exists, emit a force-reconnect event to trigger reconnection
-            // This allows reconnecting when connection failed or was disconnected
-            emit('force-reconnect', {
-                tabId: existingTab.id,
-                connectionId: `conn-${existingTab.id}`,
-                host: server.host,
-                username: server.username,
-                password: server.password,
-                auth_type: server.auth_type,
-                private_key_path: server.private_key_path,
-            });
+            // Only emit force-reconnect if the tab exists but is not connected
+            // Check if tab has a connectionId (means it has been connected before)
+            // and check the connection status from the store
+            const { connectionStatuses } = useServerStore.getState();
+            const status = connectionStatuses.get(server.id);
+            const isConnected = status?.connected;
+
+            if (!isConnected) {
+                // Not connected - emit event to trigger reconnection
+                emit('force-reconnect', {
+                    tabId: existingTab.id,
+                    connectionId: `conn-${existingTab.id}`,
+                    host: server.host,
+                    username: server.username,
+                    password: server.password,
+                    auth_type: server.auth_type,
+                    private_key_path: server.private_key_path,
+                });
+            }
+            // If already connected, just switch to the tab (already done above)
             return;
         }
 
