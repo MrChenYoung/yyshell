@@ -68,6 +68,6 @@ jobs:
             - **macOS (Apple Silicon M1/M2/M3/M4)**: 下载 `.dmg`
             - **Windows**: 下载 `.msi` 或 `.exe`
             - **Linux**: 下载 `.deb` 或 `.AppImage`
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
