@@ -29,16 +29,22 @@ export function TabBar({ onNewTab }: TabBarProps) {
         if (tab) {
             const connectionId = `conn-${tabId}`;
 
-            // Disconnect SSH connection
+            // Disconnect SSH connection for this specific tab
             try {
                 await invoke("disconnect", { id: connectionId });
             } catch {
                 // Ignore disconnect errors
             }
 
-            // Update connection status if server is associated
+            // Only update connection status to false if this is the LAST terminal tab for this server
             if (tab.serverId) {
-                setConnectionStatus(tab.serverId, { id: tab.serverId, connected: false });
+                const otherTabsForServer = tabs.filter(
+                    t => t.id !== tabId && t.type === 'terminal' && t.serverId === tab.serverId
+                );
+                if (otherTabsForServer.length === 0) {
+                    // This is the last terminal for this server
+                    setConnectionStatus(tab.serverId, { id: tab.serverId, connected: false });
+                }
             }
         }
 
