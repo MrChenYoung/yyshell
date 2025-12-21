@@ -15,10 +15,18 @@ export interface TransferTask {
     totalBytes: number;
     transferredBytes: number;
     progress: number;
+    speed: number; // bytes per second
     status: TransferStatus;
     error?: string;
     startTime?: number;
     endTime?: number;
+}
+
+// Speed tracking for each transfer
+interface SpeedTracker {
+    lastBytes: number;
+    lastTime: number;
+    speed: number;
 }
 
 interface TransferProgressPayload {
@@ -33,12 +41,13 @@ interface TransferProgressPayload {
 interface TransferState {
     transfers: TransferTask[];
     maxConcurrent: number;
+    speedTrackers: Map<string, SpeedTracker>;
     isProcessing: boolean;
     unlistenUpload: UnlistenFn | null;
     unlistenDownload: UnlistenFn | null;
 
     // Actions
-    addTransfer: (task: Omit<TransferTask, 'id' | 'status' | 'progress' | 'transferredBytes'>) => string;
+    addTransfer: (task: Omit<TransferTask, 'id' | 'status' | 'progress' | 'transferredBytes' | 'speed'>) => string;
     updateTransfer: (id: string, updates: Partial<TransferTask>) => void;
     removeTransfer: (id: string) => void;
     cancelTransfer: (id: string) => void;
@@ -53,6 +62,7 @@ interface TransferState {
 export const useTransferStore = create<TransferState>((set, get) => ({
     transfers: [],
     maxConcurrent: 3,
+    speedTrackers: new Map(),
     isProcessing: false,
     unlistenUpload: null,
     unlistenDownload: null,
@@ -65,6 +75,7 @@ export const useTransferStore = create<TransferState>((set, get) => ({
             status: 'pending',
             progress: 0,
             transferredBytes: 0,
+            speed: 0,
         };
 
         set((state) => ({
@@ -225,10 +236,42 @@ export const useTransferStore = create<TransferState>((set, get) => ({
             );
 
             if (task) {
+                const now = Date.now();
+                const bytes = uploaded || 0;
+
+                // Get or create speed tracker
+                let tracker = state.speedTrackers.get(task.id);
+                if (!tracker) {
+                    tracker = { lastBytes: 0, lastTime: now, speed: 0 };
+                    state.speedTrackers.set(task.id, tracker);
+                }
+
+                // Calculate speed
+                const timeDiff = (now - tracker.lastTime) / 1000;
+                const bytesDiff = bytes - tracker.lastBytes;
+                let newSpeed = tracker.speed;
+
+                if (timeDiff > 0.1 && bytesDiff >= 0) {
+                    const currentSpeed = bytesDiff / timeDiff;
+                    newSpeed = tracker.speed === 0 ? currentSpeed : tracker.speed * 0.7 + currentSpeed * 0.3;
+                    tracker.lastBytes = bytes;
+                    tracker.lastTime = now;
+                    tracker.speed = newSpeed;
+                }
+
+                // Reset on new file
+                if (bytes === 0 || bytes < tracker.lastBytes) {
+                    tracker.lastBytes = 0;
+                    tracker.lastTime = now;
+                    tracker.speed = 0;
+                    newSpeed = 0;
+                }
+
                 get().updateTransfer(task.id, {
-                    transferredBytes: uploaded || 0,
+                    transferredBytes: bytes,
                     totalBytes: total,
                     progress: percent,
+                    speed: newSpeed,
                 });
             }
         }).then((unlisten) => {
@@ -246,10 +289,42 @@ export const useTransferStore = create<TransferState>((set, get) => ({
             );
 
             if (task) {
+                const now = Date.now();
+                const bytes = downloaded || 0;
+
+                // Get or create speed tracker
+                let tracker = state.speedTrackers.get(task.id);
+                if (!tracker) {
+                    tracker = { lastBytes: 0, lastTime: now, speed: 0 };
+                    state.speedTrackers.set(task.id, tracker);
+                }
+
+                // Calculate speed
+                const timeDiff = (now - tracker.lastTime) / 1000;
+                const bytesDiff = bytes - tracker.lastBytes;
+                let newSpeed = tracker.speed;
+
+                if (timeDiff > 0.1 && bytesDiff >= 0) {
+                    const currentSpeed = bytesDiff / timeDiff;
+                    newSpeed = tracker.speed === 0 ? currentSpeed : tracker.speed * 0.7 + currentSpeed * 0.3;
+                    tracker.lastBytes = bytes;
+                    tracker.lastTime = now;
+                    tracker.speed = newSpeed;
+                }
+
+                // Reset on new file
+                if (bytes === 0 || bytes < tracker.lastBytes) {
+                    tracker.lastBytes = 0;
+                    tracker.lastTime = now;
+                    tracker.speed = 0;
+                    newSpeed = 0;
+                }
+
                 get().updateTransfer(task.id, {
-                    transferredBytes: downloaded || 0,
+                    transferredBytes: bytes,
                     totalBytes: total,
                     progress: percent,
+                    speed: newSpeed,
                 });
             }
         }).then((unlisten) => {

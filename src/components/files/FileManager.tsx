@@ -42,23 +42,6 @@ interface FileEntry {
     mtime: number;
 }
 
-// Upload progress event from Rust backend
-interface UploadProgressPayload {
-    id: string;
-    file_name: string;
-    uploaded: number;
-    total: number;
-    percent: number;
-}
-
-interface DownloadProgressPayload {
-    id: string;
-    file_name: string;
-    downloaded: number;
-    total: number;
-    percent: number;
-}
-
 interface FileManagerProps {
     connectionId: string | null;
 }
@@ -87,14 +70,6 @@ function formatDate(timestamp: number): string {
     const h = String(date.getHours()).padStart(2, "0");
     const mi = String(date.getMinutes()).padStart(2, "0");
     return y + "/" + mo + "/" + d + " " + h + ":" + mi;
-}
-
-function formatSpeed(bytesPerSecond: number): string {
-    if (bytesPerSecond <= 0) return "0 B/s";
-    const k = 1024;
-    const sizes = ["B/s", "KB/s", "MB/s", "GB/s"];
-    const i = Math.floor(Math.log(bytesPerSecond) / Math.log(k));
-    return parseFloat((bytesPerSecond / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 }
 
 function getFileIcon(name: string, isDir: boolean) {
@@ -168,43 +143,6 @@ export function FileManager({ connectionId }: FileManagerProps) {
         isDir: boolean;
         operation: 'copy' | 'cut'
     } | null>(null);
-    const [isUploading, setIsUploading] = useState(false);
-    // File-level upload progress with bytes info and speed
-    const [uploadProgress, setUploadProgress] = useState<{
-        current: number;      // Current file index
-        total: number;        // Total files count
-        fileName: string;     // Current file name
-        uploaded: number;     // Bytes uploaded for current file
-        fileSize: number;     // Total size of current file
-        percent: number;      // Progress percentage 0-100
-        speed: number;        // Upload speed in bytes per second
-    } | null>(null);
-
-    // Ref for speed calculation
-    const speedTrackRef = useRef<{ lastBytes: number; lastTime: number; speed: number }>({
-        lastBytes: 0,
-        lastTime: Date.now(),
-        speed: 0,
-    });
-
-    // Ref for upload cancellation
-    const uploadCancelledRef = useRef(false);
-
-    // Download progress state
-    const [downloadProgress, setDownloadProgress] = useState<{
-        fileName: string;
-        downloaded: number;
-        fileSize: number;
-        percent: number;
-        speed: number;
-    } | null>(null);
-
-    // Ref for download speed calculation
-    const downloadSpeedTrackRef = useRef<{ lastBytes: number; lastTime: number; speed: number }>({
-        lastBytes: 0,
-        lastTime: Date.now(),
-        speed: 0,
-    });
 
     // File preview/editor state
     const [editorFile, setEditorFile] = useState<{ path: string; name: string } | null>(null);
@@ -276,7 +214,7 @@ export function FileManager({ connectionId }: FileManagerProps) {
                 setOpeningFile({ name: file.name, downloaded: 0, total: 0, percent: 0 });
 
                 // Listen for progress events
-                const unlistenProgress = await listen<DownloadProgressPayload>('sftp-open-progress', (event) => {
+                const unlistenProgress = await listen<{ id: string; file_name: string; downloaded: number; total: number; percent: number; }>('sftp-open-progress', (event) => {
                     const p = event.payload;
                     if (p.id === connectionId && p.file_name === file.name) {
                         setOpeningFile(prev => prev ? {
@@ -310,99 +248,6 @@ export function FileManager({ connectionId }: FileManagerProps) {
                 break;
         }
     };
-
-    // Listen for upload progress events from Rust backend
-    useEffect(() => {
-        const unlisten = listen<UploadProgressPayload>("sftp-upload-progress", (event) => {
-            const payload = event.payload;
-            const now = Date.now();
-            const track = speedTrackRef.current;
-
-            // Calculate speed (bytes per second)
-            const timeDiff = (now - track.lastTime) / 1000; // seconds
-            const bytesDiff = payload.uploaded - track.lastBytes;
-
-            // Update speed with smoothing (only if time passed)
-            let newSpeed = track.speed;
-            if (timeDiff > 0.05 && bytesDiff >= 0) { // At least 50ms interval
-                const currentSpeed = bytesDiff / timeDiff;
-                // Exponential moving average for smoother display
-                newSpeed = track.speed === 0 ? currentSpeed : track.speed * 0.7 + currentSpeed * 0.3;
-                track.lastBytes = payload.uploaded;
-                track.lastTime = now;
-                track.speed = newSpeed;
-            }
-
-            // Reset tracking when starting a new file
-            if (payload.uploaded === 0 || payload.uploaded < track.lastBytes) {
-                track.lastBytes = 0;
-                track.lastTime = now;
-                track.speed = 0;
-                newSpeed = 0;
-            }
-
-            setUploadProgress(prev => ({
-                current: prev?.current ?? 1,
-                total: prev?.total ?? 1,
-                fileName: payload.file_name,
-                uploaded: payload.uploaded,
-                fileSize: payload.total,
-                percent: payload.percent,
-                speed: newSpeed,
-            }));
-        });
-
-        return () => {
-            unlisten.then(fn => fn());
-        };
-    }, []);
-
-    // Listen for download progress events from Rust backend
-    useEffect(() => {
-        const unlisten = listen<DownloadProgressPayload>("sftp-download-progress", (event) => {
-            const payload = event.payload;
-            const now = Date.now();
-            const track = downloadSpeedTrackRef.current;
-
-            // Calculate speed (bytes per second)
-            const timeDiff = (now - track.lastTime) / 1000;
-            const bytesDiff = payload.downloaded - track.lastBytes;
-
-            let newSpeed = track.speed;
-            if (timeDiff > 0.05 && bytesDiff >= 0) {
-                const currentSpeed = bytesDiff / timeDiff;
-                newSpeed = track.speed === 0 ? currentSpeed : track.speed * 0.7 + currentSpeed * 0.3;
-                track.lastBytes = payload.downloaded;
-                track.lastTime = now;
-                track.speed = newSpeed;
-            }
-
-            // Reset tracking when starting new download
-            if (payload.downloaded === 0 || payload.downloaded < track.lastBytes) {
-                track.lastBytes = 0;
-                track.lastTime = now;
-                track.speed = 0;
-                newSpeed = 0;
-            }
-
-            setDownloadProgress({
-                fileName: payload.file_name,
-                downloaded: payload.downloaded,
-                fileSize: payload.total,
-                percent: payload.percent,
-                speed: newSpeed,
-            });
-
-            // Auto-hide after download complete
-            if (payload.percent >= 100) {
-                setTimeout(() => setDownloadProgress(null), 1500);
-            }
-        });
-
-        return () => {
-            unlisten.then(fn => fn());
-        };
-    }, []);
 
     // Helper function to check if error means SSH is not connected yet
     const isSSHNotConnectedError = (errorMsg: string) => {
@@ -808,21 +653,6 @@ export function FileManager({ connectionId }: FileManagerProps) {
         }
     };
 
-    const handleCancelUpload = async () => {
-        uploadCancelledRef.current = true;
-        // Call backend to cancel ongoing upload
-        if (connectionId) {
-            try {
-                await invoke('sftp_cancel_upload', { id: connectionId });
-            } catch (e) {
-                console.error('Failed to cancel upload:', e);
-            }
-        }
-        // Clear UI immediately for better UX
-        setIsUploading(false);
-        setUploadProgress(null);
-    };
-
     const handleCopyItem = (file: FileEntry, operation: 'copy' | 'cut', overridePath?: string) => {
         if (!connectionId) return;
         // Use overridePath if provided (for tree node operations), otherwise calculate from currentPath
@@ -930,19 +760,6 @@ export function FileManager({ connectionId }: FileManagerProps) {
         }
     };
 
-    // Cancel ongoing download
-    const handleCancelDownload = async () => {
-        if (connectionId) {
-            try {
-                await invoke('sftp_cancel_download', { id: connectionId });
-            } catch (e) {
-                console.error('Failed to cancel download:', e);
-            }
-        }
-        // Clear UI immediately
-        setDownloadProgress(null);
-    };
-
     // Download folder recursively
     const handleDownloadFolder = async (file: FileEntry) => {
         if (!connectionId || !file.is_dir) return;
@@ -974,8 +791,6 @@ export function FileManager({ connectionId }: FileManagerProps) {
                 console.error('Folder download failed:', err);
                 setError(errorMsg);
             }
-        } finally {
-            setDownloadProgress(null);
         }
     };
 
@@ -1508,9 +1323,9 @@ export function FileManager({ connectionId }: FileManagerProps) {
                             新建文件
                         </ContextMenuItem>
                         <ContextMenuSeparator />
-                        <ContextMenuItem onSelect={handleUploadFile} disabled={isUploading}>
+                        <ContextMenuItem onSelect={handleUploadFile}>
                             <Upload className="w-4 h-4 mr-2 text-green-400" />
-                            {isUploading ? '上传中...' : '上传文件'}
+                            上传文件
                         </ContextMenuItem>
                         <ContextMenuItem onSelect={handlePaste} disabled={!clipboardItem}>
                             <Clipboard className="w-4 h-4 mr-2" />
@@ -1522,68 +1337,7 @@ export function FileManager({ connectionId }: FileManagerProps) {
 
             <div className="px-2 py-1 border-t border-border/30 text-[10px] text-muted-foreground flex items-center justify-between flex-shrink-0 bg-secondary/10">
                 <span className="flex-shrink-0">{files.length} 个项目</span>
-                {uploadProgress && (
-                    <div className="flex items-center gap-2">
-                        <Upload className="w-3 h-3 text-green-400 animate-pulse flex-shrink-0" />
-                        <span className="text-green-400 flex-shrink-0">
-                            ({uploadProgress.current}/{uploadProgress.total})
-                        </span>
-                        <span className="text-green-400 truncate max-w-[150px]" title={uploadProgress.fileName}>
-                            {uploadProgress.fileName}
-                        </span>
-                        <div className="flex items-center gap-1.5 w-[120px]">
-                            <div className="flex-1 h-2 bg-secondary/50 rounded-full overflow-hidden">
-                                <div
-                                    className="h-full bg-gradient-to-r from-green-500 to-emerald-400 transition-all duration-150 ease-out"
-                                    style={{ width: `${uploadProgress.percent}%` }}
-                                />
-                            </div>
-                            <span className="text-green-400 w-8 text-right flex-shrink-0">
-                                {uploadProgress.percent.toFixed(0)}%
-                            </span>
-                        </div>
-                        <span className="text-cyan-400 flex-shrink-0">
-                            {formatSpeed(uploadProgress.speed)}
-                        </span>
-                        <button
-                            onClick={handleCancelUpload}
-                            className="flex-shrink-0 p-0.5 rounded hover:bg-red-500/20 text-red-400 hover:text-red-300 transition-colors"
-                            title="取消上传"
-                        >
-                            <X className="w-3.5 h-3.5" />
-                        </button>
-                    </div>
-                )}
-                {downloadProgress && (
-                    <div className="flex items-center gap-2">
-                        <Download className="w-3 h-3 text-blue-400 animate-pulse flex-shrink-0" />
-                        <span className="text-blue-400 truncate max-w-[150px]" title={downloadProgress.fileName}>
-                            {downloadProgress.fileName}
-                        </span>
-                        <div className="flex items-center gap-1.5 w-[120px]">
-                            <div className="flex-1 h-2 bg-secondary/50 rounded-full overflow-hidden">
-                                <div
-                                    className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 transition-all duration-150 ease-out"
-                                    style={{ width: `${downloadProgress.percent}%` }}
-                                />
-                            </div>
-                            <span className="text-blue-400 w-8 text-right flex-shrink-0">
-                                {downloadProgress.percent.toFixed(0)}%
-                            </span>
-                        </div>
-                        <span className="text-cyan-400 flex-shrink-0">
-                            {formatSpeed(downloadProgress.speed)}
-                        </span>
-                        <button
-                            onClick={handleCancelDownload}
-                            className="flex-shrink-0 p-0.5 rounded hover:bg-red-500/20 text-red-400 hover:text-red-300 transition-colors"
-                            title="取消下载"
-                        >
-                            <X className="w-3.5 h-3.5" />
-                        </button>
-                    </div>
-                )}
-                {selectedFile && !uploadProgress && !downloadProgress && <span>已选择: {selectedFile}</span>}
+                {selectedFile && <span>已选择: {selectedFile}</span>}
             </div>
 
             {/* New Folder/File Dialog */}

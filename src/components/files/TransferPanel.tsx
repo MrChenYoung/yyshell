@@ -19,6 +19,14 @@ function formatBytes(bytes: number): string {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
+function formatSpeed(bytesPerSecond: number): string {
+    if (bytesPerSecond <= 0) return '0 B/s';
+    const k = 1024;
+    const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+    const i = Math.floor(Math.log(bytesPerSecond) / Math.log(k));
+    return parseFloat((bytesPerSecond / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
 function getStatusIcon(status: TransferStatus) {
     switch (status) {
         case 'pending':
@@ -79,6 +87,9 @@ function TransferItem({ task }: { task: TransferTask }) {
                         <div className="flex justify-between mt-0.5">
                             <span className="text-[10px] text-muted-foreground">
                                 {formatBytes(task.transferredBytes)} / {formatBytes(task.totalBytes)}
+                            </span>
+                            <span className="text-[10px] text-cyan-400">
+                                {formatSpeed(task.speed)}
                             </span>
                             <span className="text-[10px] text-muted-foreground">
                                 {task.progress.toFixed(0)}%
