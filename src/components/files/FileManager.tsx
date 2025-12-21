@@ -515,7 +515,6 @@ export function FileManager({ connectionId }: FileManagerProps) {
                 } else if (event.payload.type === 'drop') {
                     setIsDraggingOver(false);
                     const droppedPaths = event.payload.paths;
-                    console.log('File drop received:', droppedPaths);
                     if (droppedPaths && droppedPaths.length > 0) {
                         for (const filePath of droppedPaths) {
                             const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || 'file';
@@ -523,7 +522,6 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                 ? '/' + fileName
                                 : currentPath + '/' + fileName;
 
-                            console.log('Adding upload transfer:', { filePath, remotePath });
                             addTransfer({
                                 type: 'upload',
                                 connectionId,
