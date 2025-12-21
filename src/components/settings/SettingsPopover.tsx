@@ -86,7 +86,7 @@ function ThemeButton({ mode, label, icon, current, onClick }: ThemeButtonProps) 
 
 export function SettingsPopover() {
     const { resetFonts, theme, setTheme, fonts, loadSettings } = useSettingsStore();
-    const { servers } = useServerStore();
+    const { servers, loadServers } = useServerStore();
     const { quickCommands, loadQuickCommands, categoryOrder, commandOrder, importCommands } = useCommandStore();
     const { groups, expandedGroups } = useGroupStore();
 
@@ -138,56 +138,72 @@ export function SettingsPopover() {
                 groups: {
                     groups: groups,
                     expandedGroups: Array.from(expandedGroups)
-                }
+                },
+                sshTunnels: null as { presets: unknown[]; categories: string[] } | null
             }
         };
 
-        let fileContent: string;
-        if (backupPassword) {
-            // Generate random salt and IV for enhanced security
-            const salt = CryptoJS.lib.WordArray.random(128 / 8); // 16 bytes salt
-            const iv = CryptoJS.lib.WordArray.random(128 / 8);   // 16 bytes IV
+        // Load SSH tunnel data asynchronously
+        const loadTunnelData = async () => {
+            try {
+                const { invoke } = await import('@tauri-apps/api/core');
+                const presets = await invoke('load_tunnel_presets');
+                const categories = await invoke('load_tunnel_category_order');
+                backupData.data.sshTunnels = { presets: presets as unknown[], categories: categories as string[] };
+            } catch (e) {
+                console.error('Failed to load tunnel data:', e);
+            }
+        };
 
-            // Derive key using PBKDF2 with 10000 iterations (industry standard)
-            const key = CryptoJS.PBKDF2(backupPassword, salt, {
-                keySize: 256 / 32, // 256-bit key
-                iterations: 10000
-            });
+        loadTunnelData().then(() => {
 
-            // Encrypt the data with derived key and IV
-            const dataString = JSON.stringify(backupData.data);
-            const encrypted = CryptoJS.AES.encrypt(dataString, key, {
-                iv: iv,
-                mode: CryptoJS.mode.CBC,
-                padding: CryptoJS.pad.Pkcs7
-            });
+            let fileContent: string;
+            if (backupPassword) {
+                // Generate random salt and IV for enhanced security
+                const salt = CryptoJS.lib.WordArray.random(128 / 8); // 16 bytes salt
+                const iv = CryptoJS.lib.WordArray.random(128 / 8);   // 16 bytes IV
 
-            fileContent = JSON.stringify({
-                version: backupData.version,
-                backupDate: backupData.backupDate,
-                encrypted: true,
-                encryptionVersion: 2, // Mark as using enhanced encryption
-                salt: salt.toString(CryptoJS.enc.Base64),
-                iv: iv.toString(CryptoJS.enc.Base64),
-                data: encrypted.ciphertext.toString(CryptoJS.enc.Base64)
-            }, null, 2);
-        } else {
-            fileContent = JSON.stringify(backupData, null, 2);
-        }
+                // Derive key using PBKDF2 with 10000 iterations (industry standard)
+                const key = CryptoJS.PBKDF2(backupPassword, salt, {
+                    keySize: 256 / 32, // 256-bit key
+                    iterations: 10000
+                });
 
-        const blob = new Blob([fileContent], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `yyshell_backup_${new Date().toISOString().slice(0, 10)}.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+                // Encrypt the data with derived key and IV
+                const dataString = JSON.stringify(backupData.data);
+                const encrypted = CryptoJS.AES.encrypt(dataString, key, {
+                    iv: iv,
+                    mode: CryptoJS.mode.CBC,
+                    padding: CryptoJS.pad.Pkcs7
+                });
 
-        setBackupDialogOpen(false);
-        setBackupPassword('');
-        setBackupConfirmPassword('');
+                fileContent = JSON.stringify({
+                    version: backupData.version,
+                    backupDate: backupData.backupDate,
+                    encrypted: true,
+                    encryptionVersion: 2, // Mark as using enhanced encryption
+                    salt: salt.toString(CryptoJS.enc.Base64),
+                    iv: iv.toString(CryptoJS.enc.Base64),
+                    data: encrypted.ciphertext.toString(CryptoJS.enc.Base64)
+                }, null, 2);
+            } else {
+                fileContent = JSON.stringify(backupData, null, 2);
+            }
+
+            const blob = new Blob([fileContent], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `yyshell_backup_${new Date().toISOString().slice(0, 10)}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            setBackupDialogOpen(false);
+            setBackupPassword('');
+            setBackupConfirmPassword('');
+        });
     };
 
     // Handle file selection for restore
@@ -312,9 +328,33 @@ export function SettingsPopover() {
                 restoredItems.push('设置');
             }
 
-            // Note: Server restoration requires backend support
+            // Restore servers (saves passwords to keychain via backend)
             if (data.servers?.length > 0) {
-                restoredItems.push(`${data.servers.length} 个服务器配置 (需重启应用)`);
+                try {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    await invoke('save_servers', { servers: data.servers });
+                    await loadServers();  // Reload servers to update UI
+                    restoredItems.push(`${data.servers.length} 个服务器`);
+                } catch (serverError) {
+                    console.error('Failed to restore servers:', serverError);
+                    restoredItems.push('服务器恢复失败');
+                }
+            }
+
+            // Restore SSH tunnels
+            if (data.sshTunnels) {
+                try {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    if (data.sshTunnels.presets) {
+                        await invoke('save_tunnel_presets', { presets: data.sshTunnels.presets });
+                    }
+                    if (data.sshTunnels.categories) {
+                        await invoke('save_tunnel_category_order', { categories: data.sshTunnels.categories });
+                    }
+                    restoredItems.push('SSH隧道');
+                } catch (tunnelError) {
+                    console.error('Failed to restore SSH tunnels:', tunnelError);
+                }
             }
 
             // Reload data
@@ -562,7 +602,7 @@ export function SettingsPopover() {
                                     <div className="text-sm">
                                         <p className="font-medium">警告</p>
                                         <p className="text-xs opacity-80 mt-1">
-                                            恢复操作将替换当前的常用命令和设置。服务器配置需要重启应用后生效。
+                                            恢复操作将替换当前的服务器配置、常用命令和设置。
                                         </p>
                                     </div>
                                 </div>

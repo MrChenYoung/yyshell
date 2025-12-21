@@ -268,3 +268,314 @@ fn get_default_quick_commands() -> Vec<QuickCommand> {
         },
     ]
 }
+
+// ============ Tunnel Preset Functions ============
+
+/// SSH Tunnel preset - global template for any server
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TunnelPreset {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub local_port: u16,
+    pub remote_host: String,
+    pub remote_port: u16,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[tauri::command]
+pub fn load_tunnel_presets() -> Result<Vec<TunnelPreset>, String> {
+    let config_dir = get_config_dir()?;
+    let file_path = config_dir.join("tunnel_presets.json");
+    
+    if !file_path.exists() {
+        // Return default presets
+        return Ok(get_default_tunnel_presets());
+    }
+    
+    let content = fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
+    let presets: Vec<TunnelPreset> = serde_json::from_str(&content).unwrap_or_default();
+    
+    Ok(presets)
+}
+
+fn get_default_tunnel_presets() -> Vec<TunnelPreset> {
+    vec![
+        // 数据库
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "MySQL".to_string(),
+            category: "数据库".to_string(),
+            local_port: 13306,
+            remote_host: "localhost".to_string(),
+            remote_port: 3306,
+            description: Some("MySQL 数据库".to_string()),
+        },
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "PostgreSQL".to_string(),
+            category: "数据库".to_string(),
+            local_port: 15432,
+            remote_host: "localhost".to_string(),
+            remote_port: 5432,
+            description: Some("PostgreSQL 数据库".to_string()),
+        },
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Redis".to_string(),
+            category: "数据库".to_string(),
+            local_port: 16379,
+            remote_host: "localhost".to_string(),
+            remote_port: 6379,
+            description: Some("Redis 缓存".to_string()),
+        },
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "MongoDB".to_string(),
+            category: "数据库".to_string(),
+            local_port: 27017,
+            remote_host: "localhost".to_string(),
+            remote_port: 27017,
+            description: Some("MongoDB 数据库".to_string()),
+        },
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Elasticsearch".to_string(),
+            category: "数据库".to_string(),
+            local_port: 19200,
+            remote_host: "localhost".to_string(),
+            remote_port: 9200,
+            description: Some("ES 搜索引擎".to_string()),
+        },
+        // Web服务
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Nginx".to_string(),
+            category: "Web服务".to_string(),
+            local_port: 18080,
+            remote_host: "localhost".to_string(),
+            remote_port: 80,
+            description: Some("HTTP 服务".to_string()),
+        },
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "HTTPS".to_string(),
+            category: "Web服务".to_string(),
+            local_port: 18443,
+            remote_host: "localhost".to_string(),
+            remote_port: 443,
+            description: Some("HTTPS 服务".to_string()),
+        },
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Node.js".to_string(),
+            category: "Web服务".to_string(),
+            local_port: 13000,
+            remote_host: "localhost".to_string(),
+            remote_port: 3000,
+            description: Some("Node 开发服务器".to_string()),
+        },
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Tomcat".to_string(),
+            category: "Web服务".to_string(),
+            local_port: 18080,
+            remote_host: "localhost".to_string(),
+            remote_port: 8080,
+            description: Some("Java Web 服务".to_string()),
+        },
+        // 开发工具
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Jupyter".to_string(),
+            category: "开发工具".to_string(),
+            local_port: 18888,
+            remote_host: "localhost".to_string(),
+            remote_port: 8888,
+            description: Some("Jupyter Notebook".to_string()),
+        },
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "VS Code Server".to_string(),
+            category: "开发工具".to_string(),
+            local_port: 18443,
+            remote_host: "localhost".to_string(),
+            remote_port: 8443,
+            description: Some("远程 VS Code".to_string()),
+        },
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Docker API".to_string(),
+            category: "开发工具".to_string(),
+            local_port: 12375,
+            remote_host: "localhost".to_string(),
+            remote_port: 2375,
+            description: Some("Docker 守护进程".to_string()),
+        },
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Grafana".to_string(),
+            category: "开发工具".to_string(),
+            local_port: 13001,
+            remote_host: "localhost".to_string(),
+            remote_port: 3001,
+            description: Some("监控面板".to_string()),
+        },
+        TunnelPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Prometheus".to_string(),
+            category: "开发工具".to_string(),
+            local_port: 19090,
+            remote_host: "localhost".to_string(),
+            remote_port: 9090,
+            description: Some("指标服务".to_string()),
+        },
+    ]
+}
+
+#[tauri::command]
+pub fn save_tunnel_presets(presets: Vec<TunnelPreset>) -> Result<(), String> {
+    let config_dir = get_config_dir()?;
+    let file_path = config_dir.join("tunnel_presets.json");
+    
+    let json = serde_json::to_string_pretty(&presets).map_err(|e| e.to_string())?;
+    fs::write(&file_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn add_tunnel_preset(
+    name: String,
+    category: String,
+    local_port: u16,
+    remote_host: String,
+    remote_port: u16,
+    description: Option<String>,
+) -> Result<TunnelPreset, String> {
+    let mut presets = load_tunnel_presets()?;
+    
+    let new_preset = TunnelPreset {
+        id: uuid::Uuid::new_v4().to_string(),
+        name,
+        category,
+        local_port,
+        remote_host,
+        remote_port,
+        description,
+    };
+    
+    presets.push(new_preset.clone());
+    save_tunnel_presets(presets)?;
+    
+    Ok(new_preset)
+}
+
+#[tauri::command]
+pub fn update_tunnel_preset(
+    id: String,
+    name: String,
+    category: String,
+    local_port: u16,
+    remote_host: String,
+    remote_port: u16,
+    description: Option<String>,
+) -> Result<TunnelPreset, String> {
+    let mut presets = load_tunnel_presets()?;
+    
+    let updated = TunnelPreset {
+        id: id.clone(),
+        name,
+        category,
+        local_port,
+        remote_host,
+        remote_port,
+        description,
+    };
+    
+    if let Some(pos) = presets.iter().position(|p| p.id == id) {
+        presets[pos] = updated.clone();
+        save_tunnel_presets(presets)?;
+        Ok(updated)
+    } else {
+        Err("Tunnel preset not found".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn delete_tunnel_preset(id: String) -> Result<(), String> {
+    let mut presets = load_tunnel_presets()?;
+    presets.retain(|p| p.id != id);
+    save_tunnel_presets(presets)?;
+    Ok(())
+}
+
+// ============ Tunnel Category Order Functions ============
+
+#[tauri::command]
+pub fn load_tunnel_category_order() -> Result<Vec<String>, String> {
+    let config_dir = get_config_dir()?;
+    let file_path = config_dir.join("tunnel_categories.json");
+    
+    if !file_path.exists() {
+        // Return default categories
+        return Ok(vec![
+            "数据库".to_string(),
+            "Web服务".to_string(),
+            "开发工具".to_string(),
+            "其他".to_string(),
+        ]);
+    }
+    
+    let content = fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
+    let categories: Vec<String> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    Ok(categories)
+}
+
+#[tauri::command]
+pub fn save_tunnel_category_order(categories: Vec<String>) -> Result<(), String> {
+    let config_dir = get_config_dir()?;
+    let file_path = config_dir.join("tunnel_categories.json");
+    
+    let json = serde_json::to_string_pretty(&categories).map_err(|e| e.to_string())?;
+    fs::write(&file_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn rename_tunnel_category(old_name: String, new_name: String) -> Result<(), String> {
+    // Update category order
+    let mut categories = load_tunnel_category_order()?;
+    if let Some(pos) = categories.iter().position(|c| c == &old_name) {
+        categories[pos] = new_name.clone();
+    }
+    save_tunnel_category_order(categories)?;
+    
+    // Update all presets with this category
+    let mut presets = load_tunnel_presets()?;
+    for preset in presets.iter_mut() {
+        if preset.category == old_name {
+            preset.category = new_name.clone();
+        }
+    }
+    save_tunnel_presets(presets)?;
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_tunnel_category(category_name: String) -> Result<(), String> {
+    // Remove from category order
+    let mut categories = load_tunnel_category_order()?;
+    categories.retain(|c| c != &category_name);
+    save_tunnel_category_order(categories)?;
+    
+    // Delete all presets in this category
+    let mut presets = load_tunnel_presets()?;
+    presets.retain(|p| p.category != category_name);
+    save_tunnel_presets(presets)?;
+    
+    Ok(())
+}

@@ -3,6 +3,17 @@ import { invoke } from '@tauri-apps/api/core';
 
 export type AuthType = 'Password' | 'Key' | 'Agent';
 
+export interface PortForward {
+    id: string;
+    name?: string;              // Preset name
+    category?: string;          // Category for grouping
+    local_port: number;
+    remote_host: string;
+    remote_port: number;
+    enabled: boolean;
+    auto_start?: boolean;       // Auto-start when connecting
+}
+
 export interface ServerConfig {
     id: string;
     name: string;
@@ -14,6 +25,7 @@ export interface ServerConfig {
     private_key_path?: string;
     tags: string[];
     group?: string;
+    port_forwards?: PortForward[];
 }
 
 export interface ConnectionStatus {
@@ -122,6 +134,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
             username: server.username,
             authType: server.auth_type || 'Password',
             password: server.password,
+            privateKeyPath: server.private_key_path,
         });
         return result;
     },

@@ -2,12 +2,30 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
+use crate::keychain;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AuthType {
     Password,
     Key,
     Agent,
+}
+
+/// Port forwarding / SSH tunnel preset configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortForward {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,           // Preset name, e.g. "MySQL数据库"
+    #[serde(default)]
+    pub category: Option<String>,       // Category: 数据库, Web服务, 开发工具
+    pub local_port: u16,
+    pub remote_host: String,
+    pub remote_port: u16,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub auto_start: bool,               // Auto-start when connecting
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,10 +36,13 @@ pub struct ServerConfig {
     pub port: u16,
     pub username: String,
     pub auth_type: AuthType,
-    pub password: Option<String>,      // Encrypted in production
+    #[serde(default)]  // Password loaded from keychain, not saved to JSON
+    pub password: Option<String>,
     pub private_key_path: Option<String>,
     pub tags: Vec<String>,
     pub group: Option<String>,
+    #[serde(default)]  // Port forwards configuration
+    pub port_forwards: Option<Vec<PortForward>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -52,14 +73,35 @@ pub fn load_servers(app: AppHandle) -> Result<Vec<ServerConfig>, String> {
     let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let storage: ServerStorage = serde_json::from_str(&content).map_err(|e| e.to_string())?;
     
-    Ok(storage.servers)
+    // Load passwords from system keychain (ONLY source of passwords)
+    let servers = storage.servers.into_iter().map(|mut s| {
+        s.password = keychain::get_password(&s.id);
+        s
+    }).collect();
+    
+    Ok(servers)
 }
 
 #[tauri::command]
 pub fn save_servers(app: AppHandle, servers: Vec<ServerConfig>) -> Result<(), String> {
     let path = get_storage_path(&app)?;
     
-    let storage = ServerStorage { servers };
+    // Save passwords to keychain
+    for server in &servers {
+        if let Some(pwd) = &server.password {
+            if !pwd.is_empty() {
+                keychain::save_password(&server.id, pwd)?;
+            }
+        }
+    }
+    
+    // Clear passwords before saving to file (passwords are stored in keychain, NOT in JSON)
+    let servers_for_file: Vec<ServerConfig> = servers.into_iter().map(|mut s| {
+        s.password = None;  // Never save password to JSON file
+        s
+    }).collect();
+    
+    let storage = ServerStorage { servers: servers_for_file };
     let content = serde_json::to_string_pretty(&storage).map_err(|e| e.to_string())?;
     
     fs::write(&path, content).map_err(|e| e.to_string())?;
@@ -76,6 +118,13 @@ pub fn add_server(app: AppHandle, server: ServerConfig) -> Result<Vec<ServerConf
         return Err("Server with this ID already exists".into());
     }
     
+    // Save password to keychain
+    if let Some(pwd) = &server.password {
+        if !pwd.is_empty() {
+            keychain::save_password(&server.id, pwd)?;
+        }
+    }
+    
     servers.push(server);
     save_servers(app, servers.clone())?;
     
@@ -87,6 +136,13 @@ pub fn update_server(app: AppHandle, server: ServerConfig) -> Result<Vec<ServerC
     let mut servers = load_servers(app.clone())?;
     
     if let Some(idx) = servers.iter().position(|s| s.id == server.id) {
+        // Update password in keychain
+        if let Some(pwd) = &server.password {
+            if !pwd.is_empty() {
+                keychain::save_password(&server.id, pwd)?;
+            }
+        }
+        
         servers[idx] = server;
         save_servers(app, servers.clone())?;
         Ok(servers)
@@ -106,6 +162,9 @@ pub fn delete_server(app: AppHandle, id: String) -> Result<Vec<ServerConfig>, St
         return Err("Server not found".into());
     }
     
+    // Delete password from keychain
+    let _ = keychain::delete_password(&id);
+    
     save_servers(app, servers.clone())?;
     Ok(servers)
 }
@@ -117,6 +176,7 @@ pub fn test_connection(
     username: String,
     auth_type: AuthType,
     password: Option<String>,
+    private_key_path: Option<String>,
 ) -> Result<String, String> {
     use std::net::TcpStream;
     use std::time::Duration;
@@ -144,9 +204,13 @@ pub fn test_connection(
                 .map_err(|e| format!("Agent认证失败: {}", e))?;
         }
         AuthType::Key => {
-            // For now, use agent as fallback
-            sess.userauth_agent(&username)
-                .map_err(|e| format!("密钥认证失败: {}", e))?;
+            let key_path = private_key_path.ok_or("私钥路径未提供")?;
+            let path = std::path::Path::new(&key_path);
+            if let Some(passphrase) = &password {
+                sess.userauth_pubkey_file(&username, None, path, Some(passphrase))
+            } else {
+                sess.userauth_pubkey_file(&username, None, path, None)
+            }.map_err(|e| format!("密钥认证失败: {}", e))?;
         }
     }
     

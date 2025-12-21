@@ -6,7 +6,7 @@ use std::time::Duration;
 use std::io::Read;
 use std::io::Write;
 use ssh2::Session;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 pub struct Connection {
     pub session: Session,
@@ -17,7 +17,8 @@ pub struct Connection {
 #[derive(Clone)]
 pub struct StoredCredentials {
     pub host: String,
-    pub user: String,
+    pub port: u16,
+    pub username: String,
     pub password: Option<String>,
     pub auth_type: String,
     pub private_key_path: Option<String>,
@@ -207,6 +208,7 @@ pub async fn connect(
     state: tauri::State<'_, AppState>,
     id: String,
     host: String,
+    port: Option<u16>,
     user: String,
     password: Option<String>,
     auth_type: Option<String>,
@@ -214,19 +216,22 @@ pub async fn connect(
 ) -> Result<String, String> {
     
     let auth = auth_type.unwrap_or_else(|| "Password".to_string());
+    let ssh_port = port.unwrap_or(22);
     
     // Store creds for reconnection
     state.credentials.lock().unwrap().insert(id.clone(), StoredCredentials {
         host: host.clone(),
-        user: user.clone(),
+        port: ssh_port,
+        username: user.clone(),
         password: password.clone(),
         auth_type: auth.clone(),
         private_key_path: private_key_path.clone(),
     });
 
     // Clone values for the blocking task
-    let id_clone = id.clone();
+    let _id_clone = id.clone();
     let host_clone = host.clone();
+    let port_clone = ssh_port;
     let user_clone = user.clone();
     let password_clone = password.clone();
     let auth_clone = auth.clone();
@@ -235,7 +240,7 @@ pub async fn connect(
     // Run blocking SSH operations in a separate thread pool
     let (conn, channel) = tokio::task::spawn_blocking(move || -> Result<(Arc<Connection>, ssh2::Channel), String> {
         // Connect to the SSH server
-        let tcp = TcpStream::connect(format!("{}:22", host_clone)).map_err(|e| e.to_string())?;
+        let tcp = TcpStream::connect(format!("{}:{}", host_clone, port_clone)).map_err(|e| e.to_string())?;
         
         let mut sess = Session::new().unwrap();
         sess.set_tcp_stream(tcp);
@@ -420,7 +425,7 @@ pub async fn start_monitoring(
 
     thread::spawn(move || {
         // New connection for monitoring
-        if let Ok(tcp) = TcpStream::connect(format!("{}:22", creds.host)) {
+        if let Ok(tcp) = TcpStream::connect(format!("{}:{}", creds.host, creds.port)) {
             if let Ok(mut sess) = Session::new() {
                 sess.set_tcp_stream(tcp);
                 if sess.handshake().is_ok() {
@@ -429,15 +434,15 @@ pub async fn start_monitoring(
                         "Key" => {
                             if let Some(ref key_path) = creds.private_key_path {
                                 let path = std::path::Path::new(key_path);
-                                sess.userauth_pubkey_file(&creds.user, None, path, creds.password.as_deref())
+                                sess.userauth_pubkey_file(&creds.username, None, path, creds.password.as_deref())
                             } else {
                                 Err(ssh2::Error::from_errno(ssh2::ErrorCode::Session(-1)))
                             }
                         },
-                        "Agent" => sess.userauth_agent(&creds.user),
+                        "Agent" => sess.userauth_agent(&creds.username),
                         _ => {
                             if let Some(ref pwd) = creds.password {
-                                sess.userauth_password(&creds.user, pwd)
+                                sess.userauth_password(&creds.username, pwd)
                             } else {
                                 Err(ssh2::Error::from_errno(ssh2::ErrorCode::Session(-1)))
                             }
@@ -579,7 +584,7 @@ pub async fn ssh_exec_command(
     // Execute in blocking task
     tokio::task::spawn_blocking(move || -> Result<String, String> {
         // New connection for exec
-        let tcp = TcpStream::connect(format!("{}:22", creds.host)).map_err(|e| e.to_string())?;
+        let tcp = TcpStream::connect(format!("{}:{}", creds.host, creds.port)).map_err(|e| e.to_string())?;
         let mut sess = Session::new().map_err(|e| e.to_string())?;
         sess.set_tcp_stream(tcp);
         sess.handshake().map_err(|e| e.to_string())?;
@@ -589,16 +594,16 @@ pub async fn ssh_exec_command(
             "Key" => {
                 let key_path = creds.private_key_path.as_ref().ok_or("Private key path not provided")?;
                 let path = std::path::Path::new(key_path);
-                sess.userauth_pubkey_file(&creds.user, None, path, creds.password.as_deref())
+                sess.userauth_pubkey_file(&creds.username, None, path, creds.password.as_deref())
                     .map_err(|e| format!("Key authentication failed: {}", e))?;
             },
             "Agent" => {
-                sess.userauth_agent(&creds.user)
+                sess.userauth_agent(&creds.username)
                     .map_err(|e| format!("SSH Agent authentication failed: {}", e))?;
             },
             _ => {
                 let pwd = creds.password.as_ref().ok_or("Password not provided")?;
-                sess.userauth_password(&creds.user, pwd)
+                sess.userauth_password(&creds.username, pwd)
                     .map_err(|e| format!("Password authentication failed: {}", e))?;
             }
         }

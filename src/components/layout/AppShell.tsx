@@ -1,5 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from "react";
-import { Server, GripVertical, FolderOpen, Zap } from "lucide-react";
+import { Server, GripVertical, FolderOpen, Zap, Cable } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { TerminalView } from "@/components/terminal/TerminalView";
@@ -8,6 +8,7 @@ import { ServerList } from "@/components/sidebar/ServerList";
 import { FileManager } from "@/components/files/FileManager";
 import { CommandPanel } from "@/components/commands/CommandPanel";
 import { TabBar } from "@/components/terminal/TabBar";
+import { PortForwardPanel } from "@/components/terminal/PortForwardPanel";
 import { useTabStore, Tab } from "@/stores/useTabStore";
 import { ServerConfig, useServerStore } from "@/stores/useServerStore";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -254,6 +255,13 @@ export function AppShell() {
                                     <Zap className="w-3.5 h-3.5 mr-1.5" />
                                     命令中心
                                 </TabsTrigger>
+                                <TabsTrigger
+                                    value="portforward"
+                                    className="text-xs data-[state=active]:bg-primary/15 data-[state=active]:text-primary"
+                                >
+                                    <Cable className="w-3.5 h-3.5 mr-1.5" />
+                                    SSH 隧道
+                                </TabsTrigger>
                             </TabsList>
                         </div>
                         <TabsContent forceMount value="files" className="flex-1 m-0 overflow-hidden data-[state=inactive]:hidden">
@@ -269,6 +277,9 @@ export function AppShell() {
                                     }
                                 }}
                             />
+                        </TabsContent>
+                        <TabsContent forceMount value="portforward" className="flex-1 m-0 overflow-hidden data-[state=inactive]:hidden">
+                            <PortForwardPanel connectionId={activeTabId ? `conn-${activeTabId}` : null} />
                         </TabsContent>
                     </Tabs>
                 </div>

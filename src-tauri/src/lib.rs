@@ -8,6 +8,8 @@ mod ssh;
 mod sftp;
 mod storage;
 mod commands;
+mod keychain;
+mod port_forward;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -16,6 +18,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(ssh::AppState::default())
         .manage(sftp::SftpState::default())
+        .manage(port_forward::PortForwardState::default())
         .invoke_handler(tauri::generate_handler![
             greet, 
             ssh::connect, ssh::disconnect, ssh::write_pty, ssh::resize_pty, ssh::start_monitoring, ssh::ssh_exec_command,
@@ -30,9 +33,13 @@ pub fn run() {
             storage::load_tabs, storage::save_tabs,
             commands::load_command_history, commands::add_command_history, commands::clear_command_history,
             commands::load_quick_commands, commands::save_quick_commands,
-            commands::add_quick_command, commands::update_quick_command, commands::delete_quick_command
+            commands::add_quick_command, commands::update_quick_command, commands::delete_quick_command,
+            commands::load_tunnel_presets, commands::save_tunnel_presets,
+            commands::add_tunnel_preset, commands::update_tunnel_preset, commands::delete_tunnel_preset,
+            commands::load_tunnel_category_order, commands::save_tunnel_category_order,
+            commands::rename_tunnel_category, commands::delete_tunnel_category,
+            port_forward::start_port_forward, port_forward::stop_port_forward, port_forward::list_port_forwards
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
