@@ -490,7 +490,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
     useEffect(() => {
         if (serverInfo && !connected && !connecting && xtermRef.current && !wasManuallyDisconnected.current && !hasAutoConnected.current) {
             hasAutoConnected.current = true;
-            handleConnect(serverInfo.host, serverInfo.username, serverInfo.password);
+            handleConnect(serverInfo.host, serverInfo.username, serverInfo.password, serverInfo.auth_type, serverInfo.private_key_path);
         }
     }, [serverInfo, connected, connecting, handleConnect]);
 
