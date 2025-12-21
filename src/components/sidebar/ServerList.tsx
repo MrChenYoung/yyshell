@@ -21,6 +21,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { useServerStore, ServerConfig } from "@/stores/useServerStore";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useGroupStore } from "@/stores/useGroupStore";
+import { useTabStore } from "@/stores/useTabStore";
 import { ServerDialog } from "./ServerDialog";
 import { GroupDialog } from "./GroupDialog";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -50,6 +51,7 @@ interface SortableGroupProps {
     onMoveServer: (serverId: string, direction: 'up' | 'down' | 'top' | 'bottom') => void;
     activeServerId: string | null;
     connectionStatuses: Map<string, { connected: boolean }>;
+    tabCounts: Map<string, number>;  // Server ID -> number of terminal tabs
 }
 
 function SortableGroup({
@@ -70,7 +72,8 @@ function SortableGroup({
     onDuplicateServer,
     onMoveServer,
     activeServerId,
-    connectionStatuses
+    connectionStatuses,
+    tabCounts
 }: SortableGroupProps) {
     const {
         attributes,
@@ -149,6 +152,7 @@ function SortableGroup({
                         const status = connectionStatuses.get(server.id);
                         const isActive = server.id === activeServerId;
                         const otherGroups = allGroups.filter(g => g !== group);
+                        const terminalCount = tabCounts.get(server.id) || 0;
 
                         return (
                             <ContextMenu key={server.id}>
@@ -162,9 +166,23 @@ function SortableGroup({
                                         onDoubleClick={() => onServerConnect(server)}
                                         onContextMenu={(e) => e.stopPropagation()}
                                     >
-                                        <div className="flex-shrink-0">
+                                        <div className="flex-shrink-0 flex items-center gap-1">
                                             {status?.connected ? (
-                                                <div className="w-2 h-2 rounded-full bg-green-500 connected-indicator" />
+                                                <>
+                                                    <div className="w-2 h-2 rounded-full bg-green-500 connected-indicator" />
+                                                    {terminalCount > 1 && (
+                                                        <span className="text-[10px] font-medium text-green-500 min-w-[14px] text-center">
+                                                            {terminalCount}
+                                                        </span>
+                                                    )}
+                                                </>
+                                            ) : terminalCount > 0 ? (
+                                                <>
+                                                    <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
+                                                    <span className="text-[10px] font-medium text-yellow-500 min-w-[14px] text-center">
+                                                        {terminalCount}
+                                                    </span>
+                                                </>
                                             ) : (
                                                 <Server className="w-3.5 h-3.5 text-muted-foreground" />
                                             )}
@@ -374,6 +392,7 @@ function SortableGroup({
 export function ServerList({ onConnect, onNewTerminal }: ServerListProps) {
     const { servers, activeServerId, connectionStatuses, loadServers, deleteServer, updateServer, setActiveServer } = useServerStore();
     const { groups, expandedGroups, addGroup, removeGroup, renameGroup, reorderGroups, toggleGroupExpanded, syncGroupsFromServers } = useGroupStore();
+    const { tabs } = useTabStore();
     const sidebarFontSize = useSettingsStore((state) => state.fonts.sidebar);
     const [dialogOpen, setDialogOpen] = useState(false);
     const [groupDialogOpen, setGroupDialogOpen] = useState(false);
@@ -670,6 +689,14 @@ export function ServerList({ onConnect, onNewTerminal }: ServerListProps) {
                                                 onMoveServer={handleMoveServer}
                                                 activeServerId={activeServerId}
                                                 connectionStatuses={connectionStatuses}
+                                                tabCounts={(() => {
+                                                    const counts = new Map<string, number>();
+                                                    tabs.filter(t => t.type === 'terminal' && t.serverId).forEach(t => {
+                                                        const current = counts.get(t.serverId!) || 0;
+                                                        counts.set(t.serverId!, current + 1);
+                                                    });
+                                                    return counts;
+                                                })()}
                                             />
                                         ))}
                                     </SortableContext>

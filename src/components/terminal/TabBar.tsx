@@ -49,32 +49,46 @@ export function TabBar({ onNewTab }: TabBarProps) {
         <div className="flex items-center bg-secondary/10 px-1 h-9 border-b">
             <ScrollArea className="flex-1">
                 <div className="flex items-center gap-0.5 py-1">
-                    {tabs.map((tab) => (
-                        <div
-                            key={tab.id}
-                            className={cn(
-                                "group flex items-center gap-1.5 px-3 py-1 rounded-t-md text-xs cursor-pointer transition-colors min-w-[100px] max-w-[180px]",
-                                activeTabId === tab.id
-                                    ? "bg-background border-t border-x border-border text-foreground"
-                                    : "hover:bg-secondary/50 text-muted-foreground"
-                            )}
-                            onClick={() => setActiveTab(tab.id)}
-                        >
-                            {tabIcons[tab.type]}
-                            <span className="truncate flex-1">{tab.title}</span>
-                            <button
+                    {tabs.map((tab) => {
+                        // Calculate sequence number for tabs of the same server
+                        let tabTitle = tab.title;
+                        if (tab.type === 'terminal' && tab.serverId) {
+                            const sameServerTabs = tabs.filter(
+                                t => t.type === 'terminal' && t.serverId === tab.serverId
+                            );
+                            if (sameServerTabs.length > 1) {
+                                const sequence = sameServerTabs.findIndex(t => t.id === tab.id) + 1;
+                                tabTitle = `${tab.title} (${sequence})`;
+                            }
+                        }
+
+                        return (
+                            <div
+                                key={tab.id}
                                 className={cn(
-                                    "p-0.5 rounded hover:bg-secondary transition-opacity",
+                                    "group flex items-center gap-1.5 px-3 py-1 rounded-t-md text-xs cursor-pointer transition-colors min-w-[100px] max-w-[180px]",
                                     activeTabId === tab.id
-                                        ? "opacity-100"
-                                        : "opacity-0 group-hover:opacity-100"
+                                        ? "bg-background border-t border-x border-border text-foreground"
+                                        : "hover:bg-secondary/50 text-muted-foreground"
                                 )}
-                                onClick={(e) => handleClose(e, tab.id)}
+                                onClick={() => setActiveTab(tab.id)}
                             >
-                                <X className="w-3 h-3" />
-                            </button>
-                        </div>
-                    ))}
+                                {tabIcons[tab.type]}
+                                <span className="truncate flex-1">{tabTitle}</span>
+                                <button
+                                    className={cn(
+                                        "p-0.5 rounded hover:bg-secondary transition-opacity",
+                                        activeTabId === tab.id
+                                            ? "opacity-100"
+                                            : "opacity-0 group-hover:opacity-100"
+                                    )}
+                                    onClick={(e) => handleClose(e, tab.id)}
+                                >
+                                    <X className="w-3 h-3" />
+                                </button>
+                            </div>
+                        );
+                    })}
                 </div>
                 <ScrollBar orientation="horizontal" />
             </ScrollArea>
