@@ -444,6 +444,35 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
         };
     }, [tabId, connectionId, serverId, setConnectionStatus, updateTab]);
 
+    // Listen for force-reconnect events from ServerList (user clicked "Connect" on existing tab)
+    useEffect(() => {
+        const handleForceReconnect = listen<{
+            tabId: string;
+            connectionId: string;
+            host: string;
+            username: string;
+            password?: string;
+            auth_type?: string;
+            private_key_path?: string;
+        }>('force-reconnect', async (event) => {
+            if (event.payload.tabId !== tabId) return;
+
+            // Skip if already connected
+            if (connectedRef.current) {
+                xtermRef.current?.writeln('\r\n\x1b[1;33m已连接，无需重新连接\x1b[0m');
+                return;
+            }
+
+            // Trigger reconnection
+            const { host, username, password, auth_type, private_key_path } = event.payload;
+            handleConnect(host, username, password || undefined, auth_type || 'Password', private_key_path);
+        });
+
+        return () => {
+            handleForceReconnect.then(unlisten => unlisten());
+        };
+    }, [tabId, handleConnect]);
+
     // Sync connected state with ref
     useEffect(() => {
         connectedRef.current = connected;

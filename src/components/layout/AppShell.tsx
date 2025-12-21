@@ -1,6 +1,7 @@
 import { useCallback, useState, useRef, useEffect } from "react";
 import { Server, GripVertical, FolderOpen, Zap } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { TerminalView } from "@/components/terminal/TerminalView";
 import { SystemMonitor } from "@/components/monitor/SystemMonitor";
 import { ServerList } from "@/components/sidebar/ServerList";
@@ -94,6 +95,17 @@ export function AppShell() {
         const existingTab = tabs.find(t => t.serverId === server.id && t.type === 'terminal');
         if (existingTab) {
             setActiveTab(existingTab.id);
+            // If tab exists, emit a force-reconnect event to trigger reconnection
+            // This allows reconnecting when connection failed or was disconnected
+            emit('force-reconnect', {
+                tabId: existingTab.id,
+                connectionId: `conn-${existingTab.id}`,
+                host: server.host,
+                username: server.username,
+                password: server.password,
+                auth_type: server.auth_type,
+                private_key_path: server.private_key_path,
+            });
             return;
         }
 
