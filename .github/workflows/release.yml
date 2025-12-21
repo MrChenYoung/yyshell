@@ -17,9 +17,6 @@ jobs:
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
             name: 'macOS-ARM64'
-          - platform: 'macos-14'
-            args: '--target x86_64-apple-darwin'
-            name: 'macOS-Intel'
           - platform: 'ubuntu-22.04'
             args: ''
             name: 'Linux'
@@ -39,7 +36,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ (matrix.platform == 'macos-latest' || matrix.platform == 'macos-14') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
 
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -68,8 +65,7 @@ jobs:
             - 🔐 加密备份/恢复
             
             ### 下载说明
-            - **macOS (Apple Silicon M1/M2/M3/M4)**: 下载 `_aarch64.dmg`
-            - **macOS (Intel)**: 下载 `_x64.dmg`
+            - **macOS (Apple Silicon M1/M2/M3/M4)**: 下载 `.dmg`
             - **Windows**: 下载 `.msi` 或 `.exe`
             - **Linux**: 下载 `.deb` 或 `.AppImage`
           releaseDraft: true
