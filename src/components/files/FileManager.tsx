@@ -6,7 +6,8 @@ import {
     Folder, FolderOpen, File, ArrowUp, RefreshCw,
     Download, Upload, FileText, Image, Archive, Code, Film,
     ChevronRight, ChevronDown, HardDrive, Trash2, Plus,
-    FolderPlus, FilePlus, Scissors, Copy, Clipboard, Edit, X
+    FolderPlus, FilePlus, Scissors, Copy, Clipboard, Edit, X,
+    List, LayoutGrid
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -155,6 +156,9 @@ export function FileManager({ connectionId }: FileManagerProps) {
     // Alert/Info dialog state for messages
     const [alertDialogOpen, setAlertDialogOpen] = useState(false);
     const [alertMessage, setAlertMessage] = useState('');
+
+    // View mode state (list or grid)
+    const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
 
     // Clipboard state for copy/cut/paste operations - includes source connectionId for cross-server support
     const [clipboardItem, setClipboardItem] = useState<{
@@ -1201,6 +1205,25 @@ export function FileManager({ connectionId }: FileManagerProps) {
                     const file = files.find(f => f.name === selectedFile);
                     if (file) handleOpenDeleteDialog(file);
                 }}><Trash2 className="w-3.5 h-3.5" /></Button>
+                <div className="w-px h-4 bg-border/50 mx-1" />
+                <Button
+                    variant={viewMode === 'list' ? 'secondary' : 'ghost'}
+                    size="icon"
+                    className="h-6 w-6"
+                    title="列表视图"
+                    onClick={() => setViewMode('list')}
+                >
+                    <List className="w-3.5 h-3.5" />
+                </Button>
+                <Button
+                    variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
+                    size="icon"
+                    className="h-6 w-6"
+                    title="网格视图"
+                    onClick={() => setViewMode('grid')}
+                >
+                    <LayoutGrid className="w-3.5 h-3.5" />
+                </Button>
             </div>
 
             <div className="flex-1 flex min-h-0">
@@ -1243,7 +1266,103 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                     <div className="p-4 text-center text-muted-foreground text-xs">
                                         <RefreshCw className="w-5 h-5 mx-auto animate-spin mb-2" />加载中...
                                     </div>
+                                ) : viewMode === 'grid' ? (
+                                    /* Grid View */
+                                    <div className="p-2 grid grid-cols-4 gap-2">
+                                        {files.map((file) => (
+                                            <ContextMenu key={file.name}>
+                                                <ContextMenuTrigger asChild>
+                                                    <div
+                                                        className={"flex flex-col items-center p-2 rounded-lg cursor-pointer transition-colors hover:bg-primary/10" + (selectedFile === file.name ? " bg-primary/20" : "")}
+                                                        onClick={() => setSelectedFile(file.name)}
+                                                        onDoubleClick={() => handleFileDoubleClick(file)}
+                                                        onContextMenu={(e) => e.stopPropagation()}
+                                                    >
+                                                        <div className="w-10 h-10 flex items-center justify-center mb-1">
+                                                            {file.is_dir ? (
+                                                                <Folder className="w-8 h-8 text-yellow-400" />
+                                                            ) : (
+                                                                <File className="w-8 h-8 text-gray-400" />
+                                                            )}
+                                                        </div>
+                                                        <span className={"text-[10px] text-center truncate w-full" + (file.is_dir ? " text-yellow-200" : "")}>
+                                                            {file.name}
+                                                        </span>
+                                                        {!file.is_dir && (
+                                                            <span className="text-[9px] text-muted-foreground">
+                                                                {formatFileSize(file.size)}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </ContextMenuTrigger>
+                                                <ContextMenuContent className="w-44">
+                                                    {file.is_dir ? (
+                                                        <>
+                                                            <ContextMenuItem onSelect={() => handleNavigate(file)}>
+                                                                <FolderOpen className="w-4 h-4 mr-2 text-yellow-400" />
+                                                                打开
+                                                            </ContextMenuItem>
+                                                            <ContextMenuSeparator />
+                                                            <ContextMenuItem onSelect={() => handleDownloadFolder(file)}>
+                                                                <Download className="w-4 h-4 mr-2 text-green-400" />
+                                                                下载文件夹
+                                                            </ContextMenuItem>
+                                                            <ContextMenuSeparator />
+                                                            <ContextMenuItem onSelect={() => handleOpenRenameDialog(file)}>
+                                                                <Edit className="w-4 h-4 mr-2" />
+                                                                重命名
+                                                            </ContextMenuItem>
+                                                            <ContextMenuItem onSelect={() => handleCopyItem(file, 'copy')}>
+                                                                <Copy className="w-4 h-4 mr-2" />
+                                                                复制
+                                                            </ContextMenuItem>
+                                                            <ContextMenuItem onSelect={() => handleCopyItem(file, 'cut')}>
+                                                                <Scissors className="w-4 h-4 mr-2" />
+                                                                剪切
+                                                            </ContextMenuItem>
+                                                            <ContextMenuSeparator />
+                                                            <ContextMenuItem className="text-red-400" onSelect={() => handleOpenDeleteDialog(file)}>
+                                                                <Trash2 className="w-4 h-4 mr-2" />
+                                                                删除
+                                                            </ContextMenuItem>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <ContextMenuItem onSelect={() => handleFileDoubleClick(file)}>
+                                                                <File className="w-4 h-4 mr-2" />
+                                                                打开
+                                                            </ContextMenuItem>
+                                                            <ContextMenuSeparator />
+                                                            <ContextMenuItem onSelect={() => handleDownloadFile(file)}>
+                                                                <Download className="w-4 h-4 mr-2 text-green-400" />
+                                                                下载
+                                                            </ContextMenuItem>
+                                                            <ContextMenuSeparator />
+                                                            <ContextMenuItem onSelect={() => handleOpenRenameDialog(file)}>
+                                                                <Edit className="w-4 h-4 mr-2" />
+                                                                重命名
+                                                            </ContextMenuItem>
+                                                            <ContextMenuItem onSelect={() => handleCopyItem(file, 'copy')}>
+                                                                <Copy className="w-4 h-4 mr-2" />
+                                                                复制
+                                                            </ContextMenuItem>
+                                                            <ContextMenuItem onSelect={() => handleCopyItem(file, 'cut')}>
+                                                                <Scissors className="w-4 h-4 mr-2" />
+                                                                剪切
+                                                            </ContextMenuItem>
+                                                            <ContextMenuSeparator />
+                                                            <ContextMenuItem className="text-red-400" onSelect={() => handleOpenDeleteDialog(file)}>
+                                                                <Trash2 className="w-4 h-4 mr-2" />
+                                                                删除
+                                                            </ContextMenuItem>
+                                                        </>
+                                                    )}
+                                                </ContextMenuContent>
+                                            </ContextMenu>
+                                        ))}
+                                    </div>
                                 ) : (
+                                    /* List View */
                                     <table className="w-full text-xs">
                                         <thead className="sticky top-0 bg-card border-b border-border/30">
                                             <tr className="text-muted-foreground text-left">
