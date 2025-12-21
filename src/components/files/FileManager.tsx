@@ -506,7 +506,7 @@ export function FileManager({ connectionId }: FileManagerProps) {
         if (!connectionId || !sftpInitialized) return;
 
         // Listen for file drop hover (visual feedback)
-        const unlistenHover = listen<{ paths: string[]; position: { x: number; y: number } }>('tauri://file-drop-hover', () => {
+        const unlistenHover = listen('tauri://file-drop-hover', () => {
             setIsDraggingOver(true);
         });
 
@@ -515,10 +515,11 @@ export function FileManager({ connectionId }: FileManagerProps) {
             setIsDraggingOver(false);
         });
 
-        // Listen for file drop
-        const unlistenDrop = listen<{ paths: string[]; position: { x: number; y: number } }>('tauri://file-drop', (event) => {
+        // Listen for file drop - Tauri 2.0 payload is string[] (array of file paths)
+        const unlistenDrop = listen<string[]>('tauri://file-drop', (event) => {
             setIsDraggingOver(false);
-            const droppedPaths = event.payload.paths;
+            const droppedPaths = event.payload;
+            console.log('File drop received:', droppedPaths);
             if (droppedPaths && droppedPaths.length > 0) {
                 // Add each file to transfer queue
                 for (const filePath of droppedPaths) {
@@ -527,6 +528,7 @@ export function FileManager({ connectionId }: FileManagerProps) {
                         ? '/' + fileName
                         : currentPath + '/' + fileName;
 
+                    console.log('Adding upload transfer:', { filePath, remotePath });
                     addTransfer({
                         type: 'upload',
                         connectionId,
