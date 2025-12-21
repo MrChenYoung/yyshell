@@ -135,6 +135,16 @@ export function AppShell() {
         });
     }, [addTab]);
 
+    // Force create new terminal for a specific server (don't reuse existing tab)
+    const handleNewTerminal = useCallback((server: ServerConfig) => {
+        addTab({
+            connectionId: null,
+            serverId: server.id,
+            title: server.name,
+            type: 'terminal',
+        });
+    }, [addTab]);
+
     const getServerInfoForTab = useCallback((tab: Tab) => {
         if (!tab.serverId) return undefined;
         const server = servers.find(s => s.id === tab.serverId);
@@ -170,7 +180,7 @@ export function AppShell() {
             >
                 {/* Server List - Upper Part */}
                 <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
-                    <ServerList onConnect={handleConnect} />
+                    <ServerList onConnect={handleConnect} onNewTerminal={handleNewTerminal} />
                 </div>
 
                 {/* Divider between server list and monitor */}

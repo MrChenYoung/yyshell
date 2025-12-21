@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 
 interface ServerListProps {
     onConnect: (server: ServerConfig) => void;
+    onNewTerminal: (server: ServerConfig) => void;
 }
 
 interface SortableGroupProps {
@@ -38,6 +39,7 @@ interface SortableGroupProps {
     onToggle: () => void;
     onServerSelect: (server: ServerConfig) => void;  // Single click - select server
     onServerConnect: (server: ServerConfig) => void; // Double click - connect to server
+    onNewTerminal: (server: ServerConfig) => void;   // Force create new terminal tab
     onEdit: (server: ServerConfig) => void;
     onDelete: (id: string) => void;
     onDeleteGroup: (group: string) => void;
@@ -58,6 +60,7 @@ function SortableGroup({
     onToggle,
     onServerSelect,
     onServerConnect,
+    onNewTerminal,
     onEdit,
     onDelete,
     onDeleteGroup,
@@ -193,7 +196,7 @@ function SortableGroup({
                                                     <Zap className="w-4 h-4 mr-2 text-green-500" />
                                                     连接服务器
                                                 </DropdownMenuItem>
-                                                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onServerConnect(server); }}>
+                                                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onNewTerminal(server); }}>
                                                     <Terminal className="w-4 h-4 mr-2" />
                                                     新建终端
                                                 </DropdownMenuItem>
@@ -263,7 +266,7 @@ function SortableGroup({
                                         <Zap className="w-4 h-4 mr-2 text-green-500" />
                                         连接服务器
                                     </ContextMenuItem>
-                                    <ContextMenuItem onSelect={() => onServerConnect(server)}>
+                                    <ContextMenuItem onSelect={() => onNewTerminal(server)}>
                                         <Terminal className="w-4 h-4 mr-2" />
                                         新建终端
                                     </ContextMenuItem>
@@ -368,7 +371,7 @@ function SortableGroup({
     );
 }
 
-export function ServerList({ onConnect }: ServerListProps) {
+export function ServerList({ onConnect, onNewTerminal }: ServerListProps) {
     const { servers, activeServerId, connectionStatuses, loadServers, deleteServer, updateServer, setActiveServer } = useServerStore();
     const { groups, expandedGroups, addGroup, removeGroup, renameGroup, reorderGroups, toggleGroupExpanded, syncGroupsFromServers } = useGroupStore();
     const sidebarFontSize = useSettingsStore((state) => state.fonts.sidebar);
@@ -586,6 +589,12 @@ export function ServerList({ onConnect }: ServerListProps) {
         onConnect(server);
     };
 
+    // New Terminal - always create a new tab
+    const handleNewTerminal = (server: ServerConfig) => {
+        setActiveServer(server.id);
+        onNewTerminal(server);
+    };
+
     return (
         <div className="h-full w-full overflow-hidden flex flex-col bg-[hsl(var(--sidebar-bg))] font-size-area" style={{ '--area-font-size': `${sidebarFontSize}px` } as React.CSSProperties}>
             {/* Enhanced Sidebar Header */}
@@ -650,6 +659,7 @@ export function ServerList({ onConnect }: ServerListProps) {
                                                 onToggle={() => handleToggleGroup(group)}
                                                 onServerSelect={handleServerSelect}
                                                 onServerConnect={handleServerConnect}
+                                                onNewTerminal={handleNewTerminal}
                                                 onEdit={handleEdit}
                                                 onDelete={handleDelete}
                                                 onDeleteGroup={handleDeleteGroup}
