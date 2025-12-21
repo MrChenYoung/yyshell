@@ -134,10 +134,10 @@ export const useTransferStore = create<TransferState>((set, get) => ({
         }));
     },
 
-    clearAll: () => {
-        // Cancel all active transfers first
-        const activeTransfers = get().transfers.filter((t) => t.status === 'transferring');
-        activeTransfers.forEach((t) => get().cancelTransfer(t.id));
+    clearAll: async () => {
+        // Cancel all active transfers first and wait for them
+        const activeTransfers = get().transfers.filter((t) => t.status === 'transferring' || t.status === 'pending');
+        await Promise.all(activeTransfers.map((t) => get().cancelTransfer(t.id)));
 
         set({ transfers: [] });
     },
