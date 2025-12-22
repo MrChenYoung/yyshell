@@ -14,7 +14,7 @@
                 "terminal"
             ],
             "repository": "https://github.com/MrChenYoung/yyshell-plugin-session-manager",
-            "download_url": "https://github.com/MrChenYoung/yyshell-plugin-session-manager/releases/download/v1.0.0/session-manager.zip",
+            "download_url": "https://github.com/MrChenYoung/yyshell-plugin-session-manager/archive/refs/heads/main.zip",
             "screenshots": [],
             "changelog": "### v1.0.0\n- 初始版本\n- 支持查看 screen/tmux 会话\n- 支持创建/附加/终止会话",
             "downloads": 0
