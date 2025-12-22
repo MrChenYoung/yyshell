@@ -1,0 +1,40 @@
+{
+    "version": 1,
+    "plugins": [
+        {
+            "id": "session-manager",
+            "name": "会话管理器",
+            "description": "管理服务器上的 screen/tmux 后台会话",
+            "author": "YYShell Team",
+            "version": "1.0.0",
+            "icon": "layers",
+            "tags": [
+                "official",
+                "tools",
+                "terminal"
+            ],
+            "repository": "https://github.com/MrChenYoung/yyshell-plugin-session-manager",
+            "download_url": "https://github.com/MrChenYoung/yyshell-plugin-session-manager/releases/download/v1.0.0/session-manager.zip",
+            "screenshots": [],
+            "changelog": "### v1.0.0\n- 初始版本\n- 支持查看 screen/tmux 会话\n- 支持创建/附加/终止会话",
+            "downloads": 0
+        },
+        {
+            "id": "system-info",
+            "name": "系统信息",
+            "description": "显示服务器详细系统信息，包括硬件、网络、磁盘等",
+            "author": "YYShell Team",
+            "version": "1.0.0",
+            "icon": "info",
+            "tags": [
+                "official",
+                "monitoring"
+            ],
+            "repository": "https://github.com/MrChenYoung/yyshell",
+            "download_url": "https://github.com/MrChenYoung/yyshell/releases/download/plugin-system-info-v1.0.0/system-info.zip",
+            "screenshots": [],
+            "changelog": "### v1.0.0\n- 初始版本",
+            "downloads": 0
+        }
+    ]
+}
