@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2024-12-24
+
+### Added
+- **备份分类选择** - 用户可选择需要备份的数据类别
+- **命令历史备份** - 支持备份每个服务器的命令执行历史
+- **插件信息备份** - 记录已安装插件列表
+
+### Changed
+- 备份对话框 UI 重构，显示分类选择复选框
+- 备份文件版本升级到 v2，包含 `categories` 字段
+
 ## [1.0.0] - 2024-12-24 🎉
 
 ### 🚀 重大更新

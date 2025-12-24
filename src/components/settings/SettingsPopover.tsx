@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { Settings, Plus, Minus, RotateCcw, Sun, Moon, Monitor, Download, Upload, AlertCircle, CheckCircle, Lock, Eye, EyeOff } from "lucide-react";
+import { Settings, Plus, Minus, RotateCcw, Sun, Moon, Monitor, Download, Upload, AlertCircle, CheckCircle, Lock, Eye, EyeOff, Server, Zap, Network, History, Plug } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,6 +15,7 @@ import {
     DialogTitle,
     DialogFooter,
 } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useSettingsStore, ThemeMode } from "@/stores/useSettingsStore";
 import { useServerStore } from "@/stores/useServerStore";
 import { useCommandStore } from "@/stores/useCommandStore";
@@ -106,6 +107,20 @@ export function SettingsPopover() {
     const [restoreResult, setRestoreResult] = useState<{ success: boolean; message: string } | null>(null);
     const [isEncrypted, setIsEncrypted] = useState(false);
 
+    // Backup category selection state (all selected by default)
+    const [backupCategories, setBackupCategories] = useState({
+        servers: true,      // 服务器配置 + 分组
+        quickCommands: true, // 快捷命令
+        sshTunnels: true,   // SSH 隧道
+        settings: true,     // 应用设置
+        commandHistory: true, // 命令历史
+        plugins: true       // 插件信息
+    });
+
+    const toggleCategory = (key: keyof typeof backupCategories) => {
+        setBackupCategories(prev => ({ ...prev, [key]: !prev[key] }));
+    };
+
     // Show backup password dialog
     const handleBackupClick = () => {
         setBackupPassword('');
@@ -120,42 +135,87 @@ export function SettingsPopover() {
             return;
         }
 
+        // Check if at least one category is selected
+        const hasSelection = Object.values(backupCategories).some(v => v);
+        if (!hasSelection) {
+            return;
+        }
+
         const backupData = {
-            version: 1,
+            version: 2,  // Bump version for new backup format
             backupDate: new Date().toISOString(),
             encrypted: !!backupPassword,
+            categories: backupCategories, // Store which categories were backed up
             data: {
-                servers: servers,
-                settings: {
+                servers: backupCategories.servers ? servers : null,
+                settings: backupCategories.settings ? {
                     fonts: fonts,
                     theme: theme
-                },
-                quickCommands: {
+                } : null,
+                quickCommands: backupCategories.quickCommands ? {
                     commands: quickCommands,
                     categoryOrder: categoryOrder,
                     commandOrder: commandOrder
-                },
-                groups: {
+                } : null,
+                groups: backupCategories.servers ? {
                     groups: groups,
                     expandedGroups: Array.from(expandedGroups)
-                },
-                sshTunnels: null as { presets: unknown[]; categories: string[] } | null
+                } : null,
+                sshTunnels: null as { presets: unknown[]; categories: string[] } | null,
+                commandHistory: null as Record<string, unknown[]> | null,
+                installedPlugins: null as { id: string; name: string; version: string; enabled: boolean; repository?: string }[] | null
             }
         };
 
-        // Load SSH tunnel data asynchronously
-        const loadTunnelData = async () => {
+        // Load additional data asynchronously
+        const loadAdditionalData = async () => {
             try {
                 const { invoke } = await import('@tauri-apps/api/core');
-                const presets = await invoke('load_tunnel_presets');
-                const categories = await invoke('load_tunnel_category_order');
-                backupData.data.sshTunnels = { presets: presets as unknown[], categories: categories as string[] };
+
+                // Load SSH tunnel data (if selected)
+                if (backupCategories.sshTunnels) {
+                    const presets = await invoke('load_tunnel_presets');
+                    const categories = await invoke('load_tunnel_category_order');
+                    backupData.data.sshTunnels = { presets: presets as unknown[], categories: categories as string[] };
+                }
+
+                // Load command history for all servers (if selected)
+                if (backupCategories.commandHistory && backupCategories.servers) {
+                    const commandHistoryData: Record<string, unknown[]> = {};
+                    for (const server of servers) {
+                        try {
+                            const history = await invoke('load_command_history', { serverId: server.id });
+                            if (Array.isArray(history) && history.length > 0) {
+                                commandHistoryData[server.id] = history;
+                            }
+                        } catch (e) {
+                            console.error(`Failed to load command history for server ${server.id}:`, e);
+                        }
+                    }
+                    backupData.data.commandHistory = Object.keys(commandHistoryData).length > 0 ? commandHistoryData : null;
+                }
+
+                // Load installed plugins list (if selected)
+                if (backupCategories.plugins) {
+                    try {
+                        const plugins = await invoke('list_plugins') as { id: string; name: string; version: string; enabled: boolean; repository?: string }[];
+                        backupData.data.installedPlugins = plugins.map(p => ({
+                            id: p.id,
+                            name: p.name,
+                            version: p.version,
+                            enabled: p.enabled,
+                            repository: p.repository
+                        }));
+                    } catch (e) {
+                        console.error('Failed to load plugins:', e);
+                    }
+                }
             } catch (e) {
-                console.error('Failed to load tunnel data:', e);
+                console.error('Failed to load additional data:', e);
             }
         };
 
-        loadTunnelData().then(() => {
+        loadAdditionalData().then(() => {
 
             let fileContent: string;
             if (backupPassword) {
@@ -357,6 +417,40 @@ export function SettingsPopover() {
                 }
             }
 
+            // Restore command history
+            if (data.commandHistory && typeof data.commandHistory === 'object') {
+                try {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    let historyCount = 0;
+                    for (const [serverId, history] of Object.entries(data.commandHistory)) {
+                        if (Array.isArray(history)) {
+                            // Clear existing history first, then add each command
+                            await invoke('clear_command_history', { serverId });
+                            for (const cmd of history) {
+                                if (cmd && typeof cmd === 'object' && 'command' in cmd) {
+                                    await invoke('add_command_history', {
+                                        serverId,
+                                        command: (cmd as { command: string }).command
+                                    });
+                                }
+                            }
+                            historyCount++;
+                        }
+                    }
+                    if (historyCount > 0) {
+                        restoredItems.push(`${historyCount} 个服务器的命令历史`);
+                    }
+                } catch (historyError) {
+                    console.error('Failed to restore command history:', historyError);
+                }
+            }
+
+            // Show installed plugins info (plugins need to be reinstalled manually)
+            if (data.installedPlugins && Array.isArray(data.installedPlugins) && data.installedPlugins.length > 0) {
+                const pluginNames = data.installedPlugins.map((p: { name: string }) => p.name).join(', ');
+                restoredItems.push(`插件列表已记录 (${data.installedPlugins.length}个: ${pluginNames}，需手动重新安装)`);
+            }
+
             // Reload data
             await loadQuickCommands();
             await loadSettings();
@@ -482,16 +576,63 @@ export function SettingsPopover() {
                 <DialogContent className="sm:max-w-md">
                     <DialogHeader>
                         <DialogTitle className="flex items-center gap-2">
-                            <Lock className="w-4 h-4" />
+                            <Download className="w-4 h-4" />
                             备份数据
                         </DialogTitle>
                     </DialogHeader>
                     <div className="py-4 space-y-4">
-                        <p className="text-sm text-muted-foreground">
-                            设置密码以加密备份文件（可选）
-                        </p>
+                        {/* Category Selection */}
                         <div className="space-y-2">
-                            <Label htmlFor="backup-password">密码</Label>
+                            <Label className="text-sm font-medium">选择备份内容</Label>
+                            <div className="grid grid-cols-2 gap-2">
+                                <label className="flex items-center gap-2 p-2 rounded border border-border hover:bg-secondary/50 cursor-pointer">
+                                    <Checkbox checked={backupCategories.servers} onCheckedChange={() => toggleCategory('servers')} />
+                                    <div className="flex items-center gap-1.5">
+                                        <Server className="w-3.5 h-3.5 text-muted-foreground" />
+                                        <span className="text-xs">服务器 ({servers.length})</span>
+                                    </div>
+                                </label>
+                                <label className="flex items-center gap-2 p-2 rounded border border-border hover:bg-secondary/50 cursor-pointer">
+                                    <Checkbox checked={backupCategories.quickCommands} onCheckedChange={() => toggleCategory('quickCommands')} />
+                                    <div className="flex items-center gap-1.5">
+                                        <Zap className="w-3.5 h-3.5 text-muted-foreground" />
+                                        <span className="text-xs">快捷命令 ({quickCommands.length})</span>
+                                    </div>
+                                </label>
+                                <label className="flex items-center gap-2 p-2 rounded border border-border hover:bg-secondary/50 cursor-pointer">
+                                    <Checkbox checked={backupCategories.sshTunnels} onCheckedChange={() => toggleCategory('sshTunnels')} />
+                                    <div className="flex items-center gap-1.5">
+                                        <Network className="w-3.5 h-3.5 text-muted-foreground" />
+                                        <span className="text-xs">SSH 隧道</span>
+                                    </div>
+                                </label>
+                                <label className="flex items-center gap-2 p-2 rounded border border-border hover:bg-secondary/50 cursor-pointer">
+                                    <Checkbox checked={backupCategories.settings} onCheckedChange={() => toggleCategory('settings')} />
+                                    <div className="flex items-center gap-1.5">
+                                        <Settings className="w-3.5 h-3.5 text-muted-foreground" />
+                                        <span className="text-xs">应用设置</span>
+                                    </div>
+                                </label>
+                                <label className="flex items-center gap-2 p-2 rounded border border-border hover:bg-secondary/50 cursor-pointer">
+                                    <Checkbox checked={backupCategories.commandHistory} onCheckedChange={() => toggleCategory('commandHistory')} />
+                                    <div className="flex items-center gap-1.5">
+                                        <History className="w-3.5 h-3.5 text-muted-foreground" />
+                                        <span className="text-xs">命令历史</span>
+                                    </div>
+                                </label>
+                                <label className="flex items-center gap-2 p-2 rounded border border-border hover:bg-secondary/50 cursor-pointer">
+                                    <Checkbox checked={backupCategories.plugins} onCheckedChange={() => toggleCategory('plugins')} />
+                                    <div className="flex items-center gap-1.5">
+                                        <Plug className="w-3.5 h-3.5 text-muted-foreground" />
+                                        <span className="text-xs">插件信息</span>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        {/* Password Section */}
+                        <div className="space-y-2 pt-2 border-t border-border">
+                            <Label htmlFor="backup-password" className="text-sm text-muted-foreground">加密密码（可选）</Label>
                             <div className="relative">
                                 <Input
                                     id="backup-password"
@@ -533,7 +674,7 @@ export function SettingsPopover() {
                         </Button>
                         <Button
                             onClick={handleBackupConfirm}
-                            disabled={backupPassword !== '' && backupPassword !== backupConfirmPassword}
+                            disabled={(backupPassword !== '' && backupPassword !== backupConfirmPassword) || !Object.values(backupCategories).some(v => v)}
                         >
                             {backupPassword ? '加密备份' : '备份'}
                         </Button>
