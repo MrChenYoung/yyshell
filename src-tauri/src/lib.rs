@@ -1,15 +1,16 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
 mod ssh;
 mod sftp;
 mod storage;
 mod commands;
 mod keychain;
 mod port_forward;
+
+// Plugin system modules
+mod plugin_types;
+mod plugin_runtime;
+mod plugin_manager;
+mod plugin_commands;
+mod plugin_window;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -19,8 +20,8 @@ pub fn run() {
         .manage(ssh::AppState::default())
         .manage(sftp::SftpState::default())
         .manage(port_forward::PortForwardState::default())
+        .manage(plugin_commands::PluginState::default())
         .invoke_handler(tauri::generate_handler![
-            greet, 
             ssh::connect, ssh::disconnect, ssh::write_pty, ssh::resize_pty, ssh::start_monitoring, ssh::ssh_exec_command,
             sftp::init_sftp, sftp::sftp_list_dir, sftp::sftp_mkdir, sftp::sftp_create_file,
             sftp::sftp_upload_file, sftp::sftp_copy_file, sftp::sftp_remove_file, sftp::sftp_cancel_upload,
@@ -38,8 +39,18 @@ pub fn run() {
             commands::add_tunnel_preset, commands::update_tunnel_preset, commands::delete_tunnel_preset,
             commands::load_tunnel_category_order, commands::save_tunnel_category_order,
             commands::rename_tunnel_category, commands::delete_tunnel_category,
-            port_forward::start_port_forward, port_forward::stop_port_forward, port_forward::list_port_forwards
+            port_forward::start_port_forward, port_forward::stop_port_forward, port_forward::list_port_forwards,
+            // Plugin commands
+            plugin_commands::list_plugins, plugin_commands::install_plugin_local,
+            plugin_commands::install_plugin_github, plugin_commands::uninstall_plugin,
+            plugin_commands::set_plugin_enabled, plugin_commands::check_plugin_updates,
+            plugin_commands::call_plugin_method, plugin_commands::get_plugin_contributions,
+            plugin_commands::fetch_marketplace, plugin_commands::install_from_marketplace,
+            plugin_commands::load_plugin_bundle,
+            // Plugin window
+            plugin_window::open_plugin_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

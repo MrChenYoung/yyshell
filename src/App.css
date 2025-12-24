@@ -14,7 +14,7 @@
     --popover: 222 47% 8%;
     --popover-foreground: 210 40% 98%;
     --primary: 217 91% 60%;
-    --primary-foreground: 222 47% 5%;
+    --primary-foreground: 0 0% 100%;
     --secondary: 217 33% 17%;
     --secondary-foreground: 210 40% 98%;
     --muted: 217 33% 17%;
@@ -213,4 +213,331 @@
 
 .connected-indicator {
   animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Plugin Window Styles */
+.plugin-window {
+  min-height: 100vh;
+  padding: 20px;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.plugin-header {
+  margin-bottom: 24px;
+}
+
+.plugin-header h1 {
+  font-size: 24px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.plugin-header .header-content {
+  flex: 1;
+}
+
+.plugin-header .header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.plugin-header .back-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  margin-bottom: 12px;
+  background: hsl(var(--secondary));
+  border: none;
+  border-radius: 6px;
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.plugin-header .back-button:hover {
+  background: hsl(var(--secondary) / 0.8);
+}
+
+.plugin-error {
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  background: hsl(var(--destructive) / 0.15);
+  border: 1px solid hsl(var(--destructive) / 0.3);
+  border-radius: 8px;
+  color: hsl(var(--destructive));
+  font-size: 13px;
+}
+
+.plugin-empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: hsl(var(--muted-foreground));
+}
+
+.plugin-empty .text-sm {
+  font-size: 12px;
+  margin-top: 8px;
+  opacity: 0.7;
+}
+
+.server-list,
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.server-list .server-group-content,
+.server-list>.server-group:only-child>div:not(.server-group-header) {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.server-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.server-card:hover {
+  background: hsl(var(--accent) / 0.1);
+  border-color: hsl(var(--primary) / 0.3);
+  transform: translateX(4px);
+}
+
+.server-icon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: hsl(var(--primary) / 0.1);
+  border-radius: 8px;
+  color: hsl(var(--primary));
+}
+
+.server-info {
+  flex: 1;
+}
+
+.server-name {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.server-host {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  margin-top: 2px;
+}
+
+.server-status {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+
+.session-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-dot.attached {
+  background: hsl(var(--success));
+  box-shadow: 0 0 8px hsl(var(--success) / 0.5);
+}
+
+.status-dot.detached {
+  background: hsl(var(--muted-foreground));
+}
+
+.session-type {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.session-type.screen {
+  background: hsl(217 91% 60% / 0.2);
+  color: hsl(217 91% 60%);
+}
+
+.session-type.tmux {
+  background: hsl(142 76% 36% / 0.2);
+  color: hsl(142 76% 36%);
+}
+
+.session-name {
+  flex: 1;
+  font-weight: 500;
+}
+
+.session-id {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+
+.create-form {
+  display: flex;
+  gap: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+}
+
+.create-form input,
+.create-form select {
+  padding: 8px 12px;
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.create-form input {
+  flex: 1;
+}
+
+.create-form input:focus,
+.create-form select:focus {
+  border-color: hsl(var(--primary));
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.icon-button:hover {
+  background: hsl(var(--secondary));
+}
+
+.icon-button.danger {
+  color: hsl(var(--destructive));
+}
+
+.icon-button.danger:hover {
+  background: hsl(var(--destructive) / 0.1);
+}
+
+.primary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: hsl(var(--primary));
+  border: none;
+  border-radius: 6px;
+  color: hsl(var(--primary-foreground));
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.primary-button:hover {
+  filter: brightness(1.1);
+}
+
+.primary-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.text-muted-foreground {
+  color: hsl(var(--muted-foreground));
+}
+
+/* Server Group Styles */
+.server-group {
+  margin-bottom: 12px;
+}
+
+.server-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: hsl(var(--secondary));
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: hsl(var(--foreground));
+}
+
+.server-group-header:hover {
+  background: hsl(var(--secondary) / 0.8);
+}
+
+.server-group-header.ungrouped {
+  cursor: default;
+  opacity: 0.8;
+}
+
+.server-group-header .group-chevron {
+  transition: transform 0.2s;
+}
+
+.server-group-header .group-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.server-group-header .group-name {
+  flex: 1;
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.server-group-header .group-count {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: hsl(var(--primary) / 0.2);
+  color: hsl(var(--primary));
+  border-radius: 10px;
+}
+
+.server-group-content {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
 }

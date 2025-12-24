@@ -36,6 +36,10 @@ export default defineConfig(async () => ({
   // Build optimization with code splitting
   build: {
     rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        plugin: path.resolve(__dirname, 'plugin-window.html'),
+      },
       output: {
         manualChunks: {
           // React core

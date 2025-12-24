@@ -1,5 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from "react";
-import { Server, GripVertical, FolderOpen, Zap, Cable } from "lucide-react";
+import { Server, GripVertical, FolderOpen, Zap, Cable, Puzzle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { TerminalView } from "@/components/terminal/TerminalView";
@@ -11,7 +11,10 @@ import { TabBar } from "@/components/terminal/TabBar";
 import { PortForwardPanel } from "@/components/terminal/PortForwardPanel";
 import { useTabStore, Tab } from "@/stores/useTabStore";
 import { ServerConfig, useServerStore } from "@/stores/useServerStore";
+import { usePluginStore } from "@/stores/usePluginStore";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { PluginCenter } from "@/components/plugins/PluginCenter";
 
 // Resizable divider component
 interface DividerProps {
@@ -74,11 +77,18 @@ function ResizeDivider({ direction, onResize }: DividerProps) {
 export function AppShell() {
     const { tabs, activeTabId, addTab, setActiveTab } = useTabStore();
     const { servers, setActiveServer } = useServerStore();
+    const { loadPlugins } = usePluginStore();
 
     // Panel sizes in pixels
     const [sidebarWidth, setSidebarWidth] = useState(300);
     const [monitorHeight, setMonitorHeight] = useState(460);
     const [fileManagerHeight, setFileManagerHeight] = useState(360);
+    const [pluginCenterOpen, setPluginCenterOpen] = useState(false);
+
+    // Load plugins on mount
+    useEffect(() => {
+        loadPlugins();
+    }, [loadPlugins]);
 
     // Sync server selection with active tab
     useEffect(() => {
@@ -169,7 +179,7 @@ export function AppShell() {
     }, []);
 
     const handleFileManagerResize = useCallback((delta: number) => {
-        setFileManagerHeight(prev => Math.min(400, Math.max(100, prev - delta)));
+        setFileManagerHeight(prev => Math.min(window.innerHeight - 100, Math.max(100, prev - delta)));
     }, []);
 
     return (
@@ -193,6 +203,19 @@ export function AppShell() {
                     style={{ height: monitorHeight }}
                 >
                     <SystemMonitor compact />
+                </div>
+
+                {/* Bottom Toolbar - Plugin Center only */}
+                <div className="flex-shrink-0 border-t border-border/30 px-3 py-2 bg-[hsl(var(--sidebar-bg))]">
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 hover:bg-primary/10 hover:text-primary"
+                        onClick={() => setPluginCenterOpen(true)}
+                        title="插件中心"
+                    >
+                        <Puzzle className="w-4 h-4" />
+                    </Button>
                 </div>
             </div>
 
@@ -284,6 +307,9 @@ export function AppShell() {
                     </Tabs>
                 </div>
             </div>
+
+            {/* Plugin Center Dialog */}
+            <PluginCenter open={pluginCenterOpen} onOpenChange={setPluginCenterOpen} />
         </div>
     );
 }

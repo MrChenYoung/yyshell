@@ -213,17 +213,28 @@ pub async fn connect(
     password: Option<String>,
     auth_type: Option<String>,
     private_key_path: Option<String>,
+    server_id: Option<String>,  // Original server ID for keychain lookup
 ) -> Result<String, String> {
     
     let auth = auth_type.unwrap_or_else(|| "Password".to_string());
     let ssh_port = port.unwrap_or(22);
     
-    // Store creds for reconnection
+    // If password not provided, try to get it from keychain
+    // Use server_id if provided (for plugins), otherwise use connection id
+    let actual_password = if password.is_some() {
+        password.clone()
+    } else {
+        // Use server_id for keychain lookup if provided, otherwise fall back to id
+        let keychain_id = server_id.as_ref().unwrap_or(&id);
+        crate::keychain::get_password(keychain_id)
+    };
+    
+    // Store creds for reconnection (use actual_password for storage)
     state.credentials.lock().unwrap().insert(id.clone(), StoredCredentials {
         host: host.clone(),
         port: ssh_port,
         username: user.clone(),
-        password: password.clone(),
+        password: actual_password.clone(),
         auth_type: auth.clone(),
         private_key_path: private_key_path.clone(),
     });
@@ -233,7 +244,7 @@ pub async fn connect(
     let host_clone = host.clone();
     let port_clone = ssh_port;
     let user_clone = user.clone();
-    let password_clone = password.clone();
+    let password_clone = actual_password.clone();
     let auth_clone = auth.clone();
     let key_path_clone = private_key_path.clone();
 

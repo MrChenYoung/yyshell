@@ -8,11 +8,150 @@ import "xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2, Send, Eye, EyeOff, Save } from "lucide-react";
+import { Loader2, Send, Eye, EyeOff, Save, Puzzle } from "lucide-react";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useServerStore } from "@/stores/useServerStore";
 import { useTabStore } from "@/stores/useTabStore";
 import { useCommandStore } from "@/stores/useCommandStore";
+import { usePluginStore } from "@/stores/usePluginStore";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
+
+// Plugin icon mapping for known plugins
+const PLUGIN_ICONS: Record<string, React.ReactNode> = {
+    'session-manager': (
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z" />
+        </svg>
+    ),
+};
+
+// Props for EnabledPluginButtons
+interface EnabledPluginButtonsProps {
+    serverInfo?: {
+        id: string;
+        name: string;
+        host: string;
+        port: number;
+        username: string;
+        password?: string;
+        auth_type?: string;
+        private_key_path?: string;
+    };
+}
+
+// Component to display enabled plugin buttons
+function EnabledPluginButtons({ serverInfo }: EnabledPluginButtonsProps) {
+    const { plugins } = usePluginStore();
+    const { theme } = useSettingsStore();
+
+    // Filter to only show installed and enabled plugins
+    const enabledPlugins = plugins.filter(p => p.enabled);
+
+    if (enabledPlugins.length === 0) return null;
+
+    const handlePluginClick = async (plugin: { id: string; name: string }) => {
+        // If we have server info, pass it for auto-connect
+        // NOTE: We intentionally do NOT pass password here for security
+        // The backend will fetch password from keychain using server ID
+        const autoConnectServer = serverInfo ? {
+            id: serverInfo.id,
+            name: serverInfo.name,
+            host: serverInfo.host,
+            port: serverInfo.port,
+            username: serverInfo.username,
+            // password intentionally omitted for security
+            auth_type: serverInfo.auth_type || 'Password',
+            private_key_path: serverInfo.private_key_path || null,
+        } : undefined;
+
+        await invoke('open_plugin_window', {
+            pluginId: plugin.id,
+            title: plugin.name,
+            theme: theme,
+            autoConnectServer: autoConnectServer,
+        });
+    };
+
+    return (
+        <TooltipProvider delayDuration={300}>
+            <div className="flex items-center gap-1 ml-1 pl-2 border-l border-border/50">
+                {enabledPlugins.map(plugin => (
+                    <Tooltip key={plugin.id}>
+                        <TooltipTrigger asChild>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 hover:bg-primary/20 hover:text-primary"
+                                onClick={() => handlePluginClick(plugin)}
+                            >
+                                {PLUGIN_ICONS[plugin.id] || <Puzzle className="w-4 h-4" />}
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="text-xs">
+                            {plugin.name}
+                        </TooltipContent>
+                    </Tooltip>
+                ))}
+            </div>
+        </TooltipProvider>
+    );
+}
+
+
+
+// Terminal theme definitions
+const darkTerminalTheme = {
+    background: '#0d1117',
+    foreground: '#c9d1d9',
+    cursor: '#58a6ff',
+    cursorAccent: '#0d1117',
+    selectionBackground: '#264f78',
+    black: '#0d1117',
+    red: '#ff7b72',
+    green: '#7ee787',
+    yellow: '#d29922',
+    blue: '#58a6ff',
+    magenta: '#bc8cff',
+    cyan: '#39c5cf',
+    white: '#b1bac4',
+    brightBlack: '#6e7681',
+    brightRed: '#ffa198',
+    brightGreen: '#8ddb8c',
+    brightYellow: '#e3b341',
+    brightBlue: '#79c0ff',
+    brightMagenta: '#d2a8ff',
+    brightCyan: '#56d4dd',
+    brightWhite: '#ffffff',
+};
+
+const lightTerminalTheme = {
+    background: '#f6f8fa',
+    foreground: '#24292f',
+    cursor: '#0969da',
+    cursorAccent: '#f6f8fa',
+    selectionBackground: '#b6e3ff',
+    black: '#24292f',
+    red: '#cf222e',
+    green: '#116329',
+    yellow: '#9a6700',
+    blue: '#0969da',
+    magenta: '#8250df',
+    cyan: '#1b7c83',
+    white: '#6e7781',
+    brightBlack: '#57606a',
+    brightRed: '#a40e26',
+    brightGreen: '#116329',
+    brightYellow: '#9a6700',
+    brightBlue: '#0969da',
+    brightMagenta: '#8250df',
+    brightCyan: '#1b7c83',
+    brightWhite: '#8c959f',
+};
 
 interface TermDataPayload {
     id: string;
@@ -41,7 +180,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
     const connectedRef = useRef(false);
     const wasManuallyDisconnected = useRef(false); // Track if user manually disconnected
     const hasAutoConnected = useRef(false); // Track if auto-connect has run
-    const { fonts } = useSettingsStore();
+    const { fonts, theme } = useSettingsStore();
     const { setConnectionStatus, activeServerId } = useServerStore();
     const { updateTab, tabs } = useTabStore();
 
@@ -180,63 +319,15 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
     useEffect(() => {
         if (!terminalRef.current) return;
 
-        // Terminal themes - light mode uses softer dark, dark mode uses pure black
-        const isDarkMode = !document.documentElement.classList.contains('light');
-
-        const darkTerminalTheme = {
-            background: '#0d1117',
-            foreground: '#c9d1d9',
-            cursor: '#58a6ff',
-            cursorAccent: '#0d1117',
-            selectionBackground: '#264f78',
-            black: '#0d1117',
-            red: '#ff7b72',
-            green: '#7ee787',
-            yellow: '#d29922',
-            blue: '#58a6ff',
-            magenta: '#bc8cff',
-            cyan: '#39c5cf',
-            white: '#b1bac4',
-            brightBlack: '#6e7681',
-            brightRed: '#ffa198',
-            brightGreen: '#8ddb8c',
-            brightYellow: '#e3b341',
-            brightBlue: '#79c0ff',
-            brightMagenta: '#d2a8ff',
-            brightCyan: '#56d4dd',
-            brightWhite: '#ffffff',
-        };
-
-        // Softer dark terminal for light mode - more gray-blue, less harsh
-        const lightModeTerminalTheme = {
-            background: '#282c34',
-            foreground: '#abb2bf',
-            cursor: '#528bff',
-            cursorAccent: '#282c34',
-            selectionBackground: '#3e4451',
-            black: '#282c34',
-            red: '#e06c75',
-            green: '#98c379',
-            yellow: '#e5c07b',
-            blue: '#61afef',
-            magenta: '#c678dd',
-            cyan: '#56b6c2',
-            white: '#abb2bf',
-            brightBlack: '#5c6370',
-            brightRed: '#e06c75',
-            brightGreen: '#98c379',
-            brightYellow: '#e5c07b',
-            brightBlue: '#61afef',
-            brightMagenta: '#c678dd',
-            brightCyan: '#56b6c2',
-            brightWhite: '#ffffff',
-        };
+        // Determine if we should use light or dark theme
+        const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        const initialTheme = isDark ? darkTerminalTheme : lightTerminalTheme;
 
         const term = new Terminal({
             cursorBlink: true,
             fontSize: fonts.terminal,
             fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-            theme: isDarkMode ? darkTerminalTheme : lightModeTerminalTheme,
+            theme: initialTheme,
             allowProposedApi: true,
         });
 
@@ -285,6 +376,14 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
             unlistenRef.current?.();
         };
     }, [connectionId]);
+
+    // Update terminal theme when app theme changes
+    useEffect(() => {
+        if (!xtermRef.current) return;
+
+        const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        xtermRef.current.options.theme = isDark ? darkTerminalTheme : lightTerminalTheme;
+    }, [theme]);
 
     // Listen for disconnect events from SystemMonitor
     useEffect(() => {
@@ -516,7 +615,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
     }, []);
 
     return (
-        <div className="h-full w-full flex flex-col bg-[#0d1117]">
+        <div className={`h-full w-full flex flex-col ${theme === 'light' ? 'bg-[#f6f8fa]' : 'bg-[#0d1117]'}`}>
             {/* Quick connect save banner */}
             {connected && isQuickConnect && (
                 <div className="flex items-center justify-between px-3 py-1.5 bg-blue-500/10 border-b border-blue-500/30">
@@ -604,10 +703,10 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
 
             {/* Bottom command input bar */}
             {connected && (
-                <div className="flex items-center gap-2 px-2 py-1.5 bg-[#161b22] border-t border-[#30363d]">
+                <div className={`flex items-center gap-2 px-2 py-1.5 border-t ${theme === 'light' ? 'bg-[#eaeef2] border-[#d0d7de]' : 'bg-[#161b22] border-[#30363d]'}`}>
                     <span className="text-xs text-muted-foreground whitespace-nowrap">命令输入</span>
                     <Input
-                        className="flex-1 h-7 text-sm bg-[#0d1117] border-[#30363d] focus-visible:ring-1 focus-visible:ring-primary"
+                        className={`flex-1 h-7 text-sm focus-visible:ring-1 focus-visible:ring-primary ${theme === 'light' ? 'bg-[#f6f8fa] border-[#d0d7de]' : 'bg-[#0d1117] border-[#30363d]'}`}
                         placeholder="输入命令按 Enter 发送"
                         value={commandInput}
                         onChange={e => setCommandInput(e.target.value)}
@@ -626,6 +725,20 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
                     >
                         <Send className="w-3.5 h-3.5" />
                     </Button>
+
+                    {/* Plugin shortcuts - only show installed and enabled plugins */}
+                    <EnabledPluginButtons
+                        serverInfo={serverInfo ? {
+                            id: serverId || `quick-${tabId}`,
+                            name: currentTab?.title || serverInfo.host,
+                            host: serverInfo.host,
+                            port: serverInfo.port || 22,
+                            username: serverInfo.username,
+                            password: serverInfo.password,
+                            auth_type: serverInfo.auth_type,
+                            private_key_path: serverInfo.private_key_path,
+                        } : undefined}
+                    />
                 </div>
             )}
         </div>
