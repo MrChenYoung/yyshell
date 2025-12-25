@@ -39,6 +39,7 @@ pub struct FileEntry {
     pub is_dir: bool,
     pub size: u64,
     pub mtime: u64,
+    pub perm: u32,  // File permissions (e.g., 0o755)
 }
 
 /// Upload progress event payload
@@ -153,6 +154,7 @@ pub async fn sftp_list_dir(
                         is_dir: stat.is_dir(),
                         size: stat.size.unwrap_or(0),
                         mtime: stat.mtime.unwrap_or(0),
+                        perm: stat.perm.unwrap_or(0),
                     });
                 }
             },

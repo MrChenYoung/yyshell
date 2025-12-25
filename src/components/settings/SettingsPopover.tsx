@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { Settings, Plus, Minus, RotateCcw, Sun, Moon, Monitor, Download, Upload, AlertCircle, CheckCircle, Lock, Eye, EyeOff, Server, Zap, Network, History, Plug } from "lucide-react";
+import { Settings, Plus, Minus, RotateCcw, Sun, Moon, Monitor, Download, Upload, AlertCircle, CheckCircle, Lock, Eye, EyeOff, Server, Zap, Network, History, Plug, FileCode2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,6 +19,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useSettingsStore, ThemeMode } from "@/stores/useSettingsStore";
 import { useServerStore } from "@/stores/useServerStore";
 import { useCommandStore } from "@/stores/useCommandStore";
+import { useScriptStore } from "@/stores/useScriptStore";
 import { useGroupStore } from "@/stores/useGroupStore";
 import { cn } from "@/lib/utils";
 import CryptoJS from 'crypto-js';
@@ -90,6 +91,7 @@ export function SettingsPopover() {
     const { servers, loadServers } = useServerStore();
     const { quickCommands, loadQuickCommands, categoryOrder, commandOrder, importCommands } = useCommandStore();
     const { groups, expandedGroups } = useGroupStore();
+    const { scripts, loadScripts } = useScriptStore();
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -111,6 +113,7 @@ export function SettingsPopover() {
     const [backupCategories, setBackupCategories] = useState({
         servers: true,      // 服务器配置 + 分组
         quickCommands: true, // 快捷命令
+        scripts: true,       // 脚本中心
         sshTunnels: true,   // SSH 隧道
         settings: true,     // 应用设置
         commandHistory: true, // 命令历史
@@ -157,6 +160,7 @@ export function SettingsPopover() {
                     categoryOrder: categoryOrder,
                     commandOrder: commandOrder
                 } : null,
+                scripts: null as { scripts: unknown[]; categoryOrder: string[]; scriptOrder: Record<string, string[]> } | null,
                 groups: backupCategories.servers ? {
                     groups: groups,
                     expandedGroups: Array.from(expandedGroups)
@@ -177,6 +181,17 @@ export function SettingsPopover() {
                     const presets = await invoke('load_tunnel_presets');
                     const categories = await invoke('load_tunnel_category_order');
                     backupData.data.sshTunnels = { presets: presets as unknown[], categories: categories as string[] };
+                }
+
+                // Load scripts data (if selected)
+                if (backupCategories.scripts) {
+                    const scriptCategoryOrder = localStorage.getItem('yyshell_script_category_order');
+                    const scriptOrder = localStorage.getItem('yyshell_script_order');
+                    backupData.data.scripts = {
+                        scripts: scripts,
+                        categoryOrder: scriptCategoryOrder ? JSON.parse(scriptCategoryOrder) : [],
+                        scriptOrder: scriptOrder ? JSON.parse(scriptOrder) : {}
+                    };
                 }
 
                 // Load command history for all servers (if selected)
@@ -451,8 +466,28 @@ export function SettingsPopover() {
                 restoredItems.push(`插件列表已记录 (${data.installedPlugins.length}个: ${pluginNames}，需手动重新安装)`);
             }
 
+            // Restore scripts
+            if (data.scripts && data.scripts.scripts && Array.isArray(data.scripts.scripts)) {
+                try {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    // Save scripts to backend
+                    await invoke('save_scripts_batch', { scripts: data.scripts.scripts });
+                    // Save script ordering to localStorage
+                    if (data.scripts.categoryOrder) {
+                        localStorage.setItem('yyshell_script_category_order', JSON.stringify(data.scripts.categoryOrder));
+                    }
+                    if (data.scripts.scriptOrder) {
+                        localStorage.setItem('yyshell_script_order', JSON.stringify(data.scripts.scriptOrder));
+                    }
+                    restoredItems.push(`${data.scripts.scripts.length} 个脚本`);
+                } catch (scriptError) {
+                    console.error('Failed to restore scripts:', scriptError);
+                }
+            }
+
             // Reload data
             await loadQuickCommands();
+            await loadScripts();
             await loadSettings();
 
             setRestoreResult({
@@ -597,6 +632,13 @@ export function SettingsPopover() {
                                     <div className="flex items-center gap-1.5">
                                         <Zap className="w-3.5 h-3.5 text-muted-foreground" />
                                         <span className="text-xs">快捷命令 ({quickCommands.length})</span>
+                                    </div>
+                                </label>
+                                <label className="flex items-center gap-2 p-2 rounded border border-border hover:bg-secondary/50 cursor-pointer">
+                                    <Checkbox checked={backupCategories.scripts} onCheckedChange={() => toggleCategory('scripts')} />
+                                    <div className="flex items-center gap-1.5">
+                                        <FileCode2 className="w-3.5 h-3.5 text-muted-foreground" />
+                                        <span className="text-xs">脚本中心 ({scripts.length})</span>
                                     </div>
                                 </label>
                                 <label className="flex items-center gap-2 p-2 rounded border border-border hover:bg-secondary/50 cursor-pointer">

@@ -39,6 +39,8 @@ pub fn run() {
             commands::add_tunnel_preset, commands::update_tunnel_preset, commands::delete_tunnel_preset,
             commands::load_tunnel_category_order, commands::save_tunnel_category_order,
             commands::rename_tunnel_category, commands::delete_tunnel_category,
+            // Script commands
+            commands::load_scripts, commands::add_script, commands::update_script, commands::delete_script, commands::save_scripts_batch,
             port_forward::start_port_forward, port_forward::stop_port_forward, port_forward::list_port_forwards,
             // Plugin commands
             plugin_commands::list_plugins, plugin_commands::install_plugin_local,

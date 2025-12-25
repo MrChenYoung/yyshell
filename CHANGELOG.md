@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2024-12-25
+
+### Added
+- **脚本中心** - 新增脚本管理功能，支持分类、拖拽排序
+- **脚本中心备份** - 备份/还原现在支持脚本中心数据
+- **文件权限管理** - 右键菜单新增"修改权限"功能
+  - 可视化权限设置（复选框矩阵）
+  - 常用权限快捷预设（755、644、777、600）
+  - 支持文件夹递归修改权限
+- **权限列显示** - 文件列表新增权限列，显示 `drwxr-xr-x` 格式
+
+### Fixed
+- 修复 Monaco 编辑器行尾选择高亮显示不完整的问题
+- 修复脚本执行时 `exit` 命令导致终端断开的问题
+
 ## [1.0.1] - 2024-12-24
 
 ### Added

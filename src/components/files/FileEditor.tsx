@@ -231,6 +231,19 @@ export function FileEditor({ connectionId, filePath, fileName, onClose, onSave }
                                 automaticLayout: true,
                                 tabSize: 4,
                                 insertSpaces: true,
+                                padding: { top: 8, bottom: 8 },
+                                scrollbar: {
+                                    horizontal: 'auto',
+                                    vertical: 'auto',
+                                    useShadows: false,
+                                    horizontalScrollbarSize: 10,
+                                    verticalScrollbarSize: 10,
+                                },
+                                // Fix selection highlight rendering
+                                fontLigatures: false,
+                                disableMonospaceOptimizations: true,
+                                renderLineHighlight: 'all',
+                                stopRenderingLineAfter: -1,
                             }}
                         />
                     )}

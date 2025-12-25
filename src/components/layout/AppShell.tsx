@@ -1,5 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from "react";
-import { Server, GripVertical, FolderOpen, Zap, Cable, Puzzle } from "lucide-react";
+import { Server, GripVertical, FolderOpen, Zap, Cable, Puzzle, FileCode2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { TerminalView } from "@/components/terminal/TerminalView";
@@ -15,6 +15,7 @@ import { usePluginStore } from "@/stores/usePluginStore";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { PluginCenter } from "@/components/plugins/PluginCenter";
+import { ScriptPanel } from "@/components/scripts/ScriptPanel";
 
 // Resizable divider component
 interface DividerProps {
@@ -279,6 +280,13 @@ export function AppShell() {
                                     命令中心
                                 </TabsTrigger>
                                 <TabsTrigger
+                                    value="scripts"
+                                    className="text-xs data-[state=active]:bg-primary/15 data-[state=active]:text-primary"
+                                >
+                                    <FileCode2 className="w-3.5 h-3.5 mr-1.5" />
+                                    脚本中心
+                                </TabsTrigger>
+                                <TabsTrigger
                                     value="portforward"
                                     className="text-xs data-[state=active]:bg-primary/15 data-[state=active]:text-primary"
                                 >
@@ -297,6 +305,19 @@ export function AppShell() {
                                     if (activeTabId) {
                                         // Send command to active terminal
                                         invoke("write_pty", { id: `conn-${activeTabId}`, data: cmd + "\n" });
+                                    }
+                                }}
+                            />
+                        </TabsContent>
+                        <TabsContent forceMount value="scripts" className="flex-1 m-0 overflow-hidden data-[state=inactive]:hidden">
+                            <ScriptPanel
+                                onExecuteScript={(content) => {
+                                    if (activeTabId) {
+                                        // Use heredoc to execute script in a subshell
+                                        // This prevents 'exit' in script from closing the terminal session
+                                        const escapedContent = content.replace(/'/g, "'\"'\"'");
+                                        const wrappedScript = `bash -c '${escapedContent}'\n`;
+                                        invoke("write_pty", { id: `conn-${activeTabId}`, data: wrappedScript });
                                     }
                                 }}
                             />

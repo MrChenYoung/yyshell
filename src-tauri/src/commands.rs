@@ -579,3 +579,174 @@ pub fn delete_tunnel_category(category_name: String) -> Result<(), String> {
     
     Ok(())
 }
+
+// ============ Script Center Functions ============
+
+/// Script entry for script center
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Script {
+    pub id: String,
+    pub name: String,
+    pub content: String,
+    pub category: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
+}
+
+#[tauri::command]
+pub fn load_scripts() -> Result<Vec<Script>, String> {
+    let config_dir = get_config_dir()?;
+    let file_path = config_dir.join("scripts.json");
+    
+    if !file_path.exists() {
+        return Ok(get_default_scripts());
+    }
+    
+    let content = fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
+    let scripts: Vec<Script> = serde_json::from_str(&content).unwrap_or_else(|_| get_default_scripts());
+    
+    Ok(scripts)
+}
+
+fn save_scripts(scripts: Vec<Script>) -> Result<(), String> {
+    let config_dir = get_config_dir()?;
+    let file_path = config_dir.join("scripts.json");
+    
+    let json = serde_json::to_string_pretty(&scripts).map_err(|e| e.to_string())?;
+    fs::write(&file_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn add_script(
+    name: String,
+    content: String,
+    category: String,
+    description: Option<String>,
+    language: Option<String>,
+) -> Result<Script, String> {
+    let mut scripts = load_scripts()?;
+    
+    let new_script = Script {
+        id: uuid::Uuid::new_v4().to_string(),
+        name,
+        content,
+        category,
+        description,
+        language,
+    };
+    
+    scripts.push(new_script.clone());
+    save_scripts(scripts)?;
+    
+    Ok(new_script)
+}
+
+#[tauri::command]
+pub fn update_script(
+    id: String,
+    name: String,
+    content: String,
+    category: String,
+    description: Option<String>,
+    language: Option<String>,
+) -> Result<Script, String> {
+    let mut scripts = load_scripts()?;
+    
+    let updated = Script {
+        id: id.clone(),
+        name,
+        content,
+        category,
+        description,
+        language,
+    };
+    
+    if let Some(pos) = scripts.iter().position(|s| s.id == id) {
+        scripts[pos] = updated.clone();
+        save_scripts(scripts)?;
+        Ok(updated)
+    } else {
+        Err("Script not found".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn delete_script(id: String) -> Result<(), String> {
+    let mut scripts = load_scripts()?;
+    scripts.retain(|s| s.id != id);
+    save_scripts(scripts)?;
+    Ok(())
+}
+
+/// Save all scripts (for backup restore)
+#[tauri::command]
+pub fn save_scripts_batch(scripts: Vec<Script>) -> Result<(), String> {
+    save_scripts(scripts)
+}
+
+/// Default scripts
+fn get_default_scripts() -> Vec<Script> {
+    vec![
+        Script {
+            id: "1".to_string(),
+            name: "系统信息".to_string(),
+            content: r#"#!/bin/bash
+echo "=== 系统信息 ==="
+echo "主机名: $(hostname)"
+echo "系统: $(uname -a)"
+echo "启动时间: $(uptime)"
+echo ""
+echo "=== CPU 信息 ==="
+cat /proc/cpuinfo | grep "model name" | head -1
+echo "CPU 核心数: $(nproc)"
+echo ""
+echo "=== 内存信息 ==="
+free -h
+echo ""
+echo "=== 磁盘信息 ==="
+df -h"#.to_string(),
+            category: "系统运维".to_string(),
+            description: Some("获取系统基本信息".to_string()),
+            language: Some("bash".to_string()),
+        },
+        Script {
+            id: "2".to_string(),
+            name: "清理日志".to_string(),
+            content: r#"#!/bin/bash
+# 清理30天前的日志文件
+echo "正在清理30天前的日志..."
+find /var/log -type f -name "*.log" -mtime +30 -exec rm -f {} \;
+find /var/log -type f -name "*.gz" -mtime +30 -exec rm -f {} \;
+echo "清理完成！"
+df -h /var/log"#.to_string(),
+            category: "系统运维".to_string(),
+            description: Some("清理30天前的日志文件".to_string()),
+            language: Some("bash".to_string()),
+        },
+        Script {
+            id: "3".to_string(),
+            name: "Docker 清理".to_string(),
+            content: r#"#!/bin/bash
+echo "=== Docker 清理脚本 ==="
+echo ""
+echo "清理停止的容器..."
+docker container prune -f
+echo ""
+echo "清理未使用的镜像..."
+docker image prune -f
+echo ""
+echo "清理未使用的卷..."
+docker volume prune -f
+echo ""
+echo "清理完成！当前磁盘使用:"
+docker system df"#.to_string(),
+            category: "Docker".to_string(),
+            description: Some("清理 Docker 未使用的资源".to_string()),
+            language: Some("bash".to_string()),
+        },
+    ]
+}

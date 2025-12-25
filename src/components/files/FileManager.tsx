@@ -7,7 +7,7 @@ import {
     Download, Upload, FileText, Image, Archive, Code, Film,
     ChevronRight, ChevronDown, HardDrive, Trash2, Plus,
     FolderPlus, FilePlus, Scissors, Copy, Clipboard, Edit, X,
-    List, LayoutGrid, ArrowDown, ArrowUpIcon
+    List, LayoutGrid, ArrowDown, ArrowUpIcon, Shield
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -30,6 +30,7 @@ import {
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { FileEditor } from "./FileEditor";
 import { ImagePreview } from "./ImagePreview";
 import { TransferPanel } from "./TransferPanel";
@@ -40,6 +41,7 @@ interface FileEntry {
     is_dir: boolean;
     size: number;
     mtime: number;
+    perm?: number;
 }
 
 interface FileManagerProps {
@@ -70,6 +72,31 @@ function formatDate(timestamp: number): string {
     const h = String(date.getHours()).padStart(2, "0");
     const mi = String(date.getMinutes()).padStart(2, "0");
     return y + "/" + mo + "/" + d + " " + h + ":" + mi;
+}
+
+function formatPermission(perm: number | undefined, isDir?: boolean): string {
+    if (perm === undefined || perm === 0) return "—";
+    // Convert to symbolic format like ls -al (e.g., rwxr-xr-x)
+    const mode = perm & 0o777;
+    const chars = ['r', 'w', 'x'];
+    let result = isDir ? 'd' : '-';
+
+    // Owner permissions (bits 6-8)
+    result += (mode & 0o400) ? chars[0] : '-';
+    result += (mode & 0o200) ? chars[1] : '-';
+    result += (mode & 0o100) ? chars[2] : '-';
+
+    // Group permissions (bits 3-5)
+    result += (mode & 0o040) ? chars[0] : '-';
+    result += (mode & 0o020) ? chars[1] : '-';
+    result += (mode & 0o010) ? chars[2] : '-';
+
+    // Others permissions (bits 0-2)
+    result += (mode & 0o004) ? chars[0] : '-';
+    result += (mode & 0o002) ? chars[1] : '-';
+    result += (mode & 0o001) ? chars[2] : '-';
+
+    return result;
 }
 
 function getFileIcon(name: string, isDir: boolean) {
@@ -131,6 +158,38 @@ export function FileManager({ connectionId }: FileManagerProps) {
     // Alert/Info dialog state for messages
     const [alertDialogOpen, setAlertDialogOpen] = useState(false);
     const [alertMessage, setAlertMessage] = useState('');
+
+    // Permission dialog state
+    const [chmodDialogOpen, setChmodDialogOpen] = useState(false);
+    const [chmodTarget, setChmodTarget] = useState<FileEntry | null>(null);
+    const [chmodTargetPath, setChmodTargetPath] = useState<string>(''); // For tree node paths
+    const [chmodRecursive, setChmodRecursive] = useState(false);
+    const [isChangingPermission, setIsChangingPermission] = useState(false);
+    // Permission checkboxes: [owner_r, owner_w, owner_x, group_r, group_w, group_x, other_r, other_w, other_x]
+    const [chmodPerms, setChmodPerms] = useState({
+        ownerRead: true, ownerWrite: true, ownerExecute: false,
+        groupRead: true, groupWrite: false, groupExecute: false,
+        otherRead: true, otherWrite: false, otherExecute: false,
+    });
+
+    // Convert permission checkboxes to octal string
+    const getChmodValue = () => {
+        const owner = (chmodPerms.ownerRead ? 4 : 0) + (chmodPerms.ownerWrite ? 2 : 0) + (chmodPerms.ownerExecute ? 1 : 0);
+        const group = (chmodPerms.groupRead ? 4 : 0) + (chmodPerms.groupWrite ? 2 : 0) + (chmodPerms.groupExecute ? 1 : 0);
+        const other = (chmodPerms.otherRead ? 4 : 0) + (chmodPerms.otherWrite ? 2 : 0) + (chmodPerms.otherExecute ? 1 : 0);
+        return `${owner}${group}${other}`;
+    };
+
+    // Set permissions from common presets
+    const setChmodPreset = (preset: '755' | '644' | '777' | '600') => {
+        const presets = {
+            '755': { ownerRead: true, ownerWrite: true, ownerExecute: true, groupRead: true, groupWrite: false, groupExecute: true, otherRead: true, otherWrite: false, otherExecute: true },
+            '644': { ownerRead: true, ownerWrite: true, ownerExecute: false, groupRead: true, groupWrite: false, groupExecute: false, otherRead: true, otherWrite: false, otherExecute: false },
+            '777': { ownerRead: true, ownerWrite: true, ownerExecute: true, groupRead: true, groupWrite: true, groupExecute: true, otherRead: true, otherWrite: true, otherExecute: true },
+            '600': { ownerRead: true, ownerWrite: true, ownerExecute: false, groupRead: false, groupWrite: false, groupExecute: false, otherRead: false, otherWrite: false, otherExecute: false },
+        };
+        setChmodPerms(presets[preset]);
+    };
 
     // View mode state (list or grid)
     const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
@@ -986,6 +1045,66 @@ export function FileManager({ connectionId }: FileManagerProps) {
         }
     };
 
+    // Open chmod dialog
+    const handleOpenChmodDialog = (file: FileEntry, overridePath?: string) => {
+        setChmodTarget(file);
+        setChmodTargetPath(overridePath ?? (currentPath === '/' ? '/' + file.name : currentPath + '/' + file.name));
+
+        // Set checkboxes based on actual file permissions
+        if (file.perm !== undefined && file.perm !== 0) {
+            const mode = file.perm & 0o777;
+            setChmodPerms({
+                ownerRead: !!(mode & 0o400),
+                ownerWrite: !!(mode & 0o200),
+                ownerExecute: !!(mode & 0o100),
+                groupRead: !!(mode & 0o040),
+                groupWrite: !!(mode & 0o020),
+                groupExecute: !!(mode & 0o010),
+                otherRead: !!(mode & 0o004),
+                otherWrite: !!(mode & 0o002),
+                otherExecute: !!(mode & 0o001),
+            });
+        } else {
+            // Fallback to preset if no permission info
+            setChmodPreset(file.is_dir ? '755' : '644');
+        }
+
+        setChmodRecursive(file.is_dir);
+        setChmodDialogOpen(true);
+    };
+
+    // Execute chmod command
+    const handleChmod = async () => {
+        if (!connectionId || !chmodTargetPath) return;
+
+        try {
+            setIsChangingPermission(true);
+            const escapePath = (p: string) => `'${p.replace(/'/g, "'\\''")}'`;
+            const chmodValue = getChmodValue();
+            const command = chmodRecursive
+                ? `chmod -R ${chmodValue} ${escapePath(chmodTargetPath)}`
+                : `chmod ${chmodValue} ${escapePath(chmodTargetPath)}`;
+
+            await invoke('ssh_exec_command', {
+                id: connectionId,
+                command,
+            });
+
+            setChmodDialogOpen(false);
+            setChmodTarget(null);
+            setChmodTargetPath('');
+            // Refresh
+            const { invalidatePath } = useDirectoryCacheStore.getState();
+            invalidatePath(connectionId, currentPath);
+            loadDirectory(currentPath, true);
+        } catch (err) {
+            console.error('Chmod failed:', err);
+            setError(String(err));
+        } finally {
+            setIsChangingPermission(false);
+        }
+    };
+
     const renderTreeNode = (node: TreeNode, level: number) => (
         <div key={node.path}>
             <ContextMenu>
@@ -1081,6 +1200,10 @@ export function FileManager({ connectionId }: FileManagerProps) {
                         </ContextMenuItem>
                     )}
                     <ContextMenuSeparator />
+                    <ContextMenuItem onSelect={() => handleOpenChmodDialog({ name: node.name, is_dir: true, size: 0, mtime: 0 }, node.path)}>
+                        <Shield className="w-4 h-4 mr-2 text-orange-400" />
+                        修改权限
+                    </ContextMenuItem>
                     <ContextMenuItem className="text-red-400" onSelect={() => handleOpenDeleteDialog({ name: node.name, is_dir: true, size: 0, mtime: 0 })}>
                         <Trash2 className="w-4 h-4 mr-2" />
                         删除
@@ -1255,6 +1378,10 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                                 剪切
                                                             </ContextMenuItem>
                                                             <ContextMenuSeparator />
+                                                            <ContextMenuItem onSelect={() => handleOpenChmodDialog(file)}>
+                                                                <Shield className="w-4 h-4 mr-2 text-orange-400" />
+                                                                修改权限
+                                                            </ContextMenuItem>
                                                             <ContextMenuItem className="text-red-400" onSelect={() => handleOpenDeleteDialog(file)}>
                                                                 <Trash2 className="w-4 h-4 mr-2" />
                                                                 删除
@@ -1285,6 +1412,10 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                                 剪切
                                                             </ContextMenuItem>
                                                             <ContextMenuSeparator />
+                                                            <ContextMenuItem onSelect={() => handleOpenChmodDialog(file)}>
+                                                                <Shield className="w-4 h-4 mr-2 text-orange-400" />
+                                                                修改权限
+                                                            </ContextMenuItem>
                                                             <ContextMenuItem className="text-red-400" onSelect={() => handleOpenDeleteDialog(file)}>
                                                                 <Trash2 className="w-4 h-4 mr-2" />
                                                                 删除
@@ -1302,6 +1433,7 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                             <tr className="text-muted-foreground text-left">
                                                 <th
                                                     className="px-2 py-1.5 font-medium cursor-pointer hover:text-foreground select-none"
+                                                    style={{ width: '28%' }}
                                                     onClick={() => handleSort('name')}
                                                 >
                                                     <span className="flex items-center gap-1">
@@ -1310,7 +1442,8 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                     </span>
                                                 </th>
                                                 <th
-                                                    className="px-2 py-1.5 font-medium w-20 text-right cursor-pointer hover:text-foreground select-none"
+                                                    className="px-2 py-1.5 font-medium text-right cursor-pointer hover:text-foreground select-none"
+                                                    style={{ width: '12%' }}
                                                     onClick={() => handleSort('size')}
                                                 >
                                                     <span className="flex items-center justify-end gap-1">
@@ -1319,7 +1452,8 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                     </span>
                                                 </th>
                                                 <th
-                                                    className="px-2 py-1.5 font-medium w-16 text-center cursor-pointer hover:text-foreground select-none"
+                                                    className="px-2 py-1.5 font-medium text-center cursor-pointer hover:text-foreground select-none"
+                                                    style={{ width: '15%' }}
                                                     onClick={() => handleSort('type')}
                                                 >
                                                     <span className="flex items-center justify-center gap-1">
@@ -1328,7 +1462,14 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                     </span>
                                                 </th>
                                                 <th
-                                                    className="px-2 py-1.5 font-medium w-32 text-right cursor-pointer hover:text-foreground select-none"
+                                                    className="px-2 py-1.5 font-medium text-center select-none"
+                                                    style={{ width: '15%' }}
+                                                >
+                                                    权限
+                                                </th>
+                                                <th
+                                                    className="px-2 py-1.5 font-medium text-right cursor-pointer hover:text-foreground select-none"
+                                                    style={{ width: '25%' }}
                                                     onClick={() => handleSort('mtime')}
                                                 >
                                                     <span className="flex items-center justify-end gap-1">
@@ -1356,6 +1497,7 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                             </td>
                                                             <td className="px-2 py-1 text-right text-muted-foreground">{file.is_dir ? "—" : formatFileSize(file.size)}</td>
                                                             <td className="px-2 py-1 text-center text-muted-foreground">{file.is_dir ? "文件夹" : file.name.split(".").pop()?.toUpperCase() || "FILE"}</td>
+                                                            <td className="px-2 py-1 text-center font-mono text-muted-foreground">{formatPermission(file.perm, file.is_dir)}</td>
                                                             <td className="px-2 py-1 text-right text-muted-foreground">{formatDate(file.mtime)}</td>
                                                         </tr>
                                                     </ContextMenuTrigger>
@@ -1393,6 +1535,10 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                                     复制路径
                                                                 </ContextMenuItem>
                                                                 <ContextMenuSeparator />
+                                                                <ContextMenuItem onSelect={() => handleOpenChmodDialog(file)}>
+                                                                    <Shield className="w-4 h-4 mr-2 text-orange-400" />
+                                                                    修改权限
+                                                                </ContextMenuItem>
                                                                 <ContextMenuItem className="text-red-400" onSelect={() => handleOpenDeleteDialog(file)}>
                                                                     <Trash2 className="w-4 h-4 mr-2" />
                                                                     删除
@@ -1443,6 +1589,10 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                                     复制路径
                                                                 </ContextMenuItem>
                                                                 <ContextMenuSeparator />
+                                                                <ContextMenuItem onSelect={() => handleOpenChmodDialog(file)}>
+                                                                    <Shield className="w-4 h-4 mr-2 text-orange-400" />
+                                                                    修改权限
+                                                                </ContextMenuItem>
                                                                 <ContextMenuItem className="text-red-400" onSelect={() => handleOpenDeleteDialog(file)}>
                                                                     <Trash2 className="w-4 h-4 mr-2" />
                                                                     删除
@@ -1584,6 +1734,123 @@ export function FileManager({ connectionId }: FileManagerProps) {
                 variant="info"
                 onConfirm={() => { }}
             />
+
+            {/* Chmod Permission Dialog */}
+            <Dialog open={chmodDialogOpen} onOpenChange={setChmodDialogOpen}>
+                <DialogContent className="sm:max-w-[420px]">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Shield className="w-5 h-5 text-orange-400" /> 修改权限
+                        </DialogTitle>
+                    </DialogHeader>
+                    <div className="py-4 space-y-4">
+                        <div>
+                            <Label className="text-sm text-muted-foreground">目标</Label>
+                            <p className="text-sm font-medium mt-1 truncate">{chmodTarget?.name}</p>
+                        </div>
+
+                        {/* Permission Matrix */}
+                        <div className="space-y-2">
+                            <Label className="text-sm">权限设置</Label>
+                            <div className="bg-muted/30 rounded-lg p-3 mt-2">
+                                <table className="w-full text-sm">
+                                    <thead>
+                                        <tr className="text-muted-foreground">
+                                            <th className="text-left py-1 font-normal"></th>
+                                            <th className="text-center py-1 font-normal">读取</th>
+                                            <th className="text-center py-1 font-normal">写入</th>
+                                            <th className="text-center py-1 font-normal">执行</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td className="py-1.5 text-muted-foreground">所有者</td>
+                                            <td className="text-center py-1.5">
+                                                <Checkbox checked={chmodPerms.ownerRead} onCheckedChange={(c) => setChmodPerms(p => ({ ...p, ownerRead: c === true }))} />
+                                            </td>
+                                            <td className="text-center py-1.5">
+                                                <Checkbox checked={chmodPerms.ownerWrite} onCheckedChange={(c) => setChmodPerms(p => ({ ...p, ownerWrite: c === true }))} />
+                                            </td>
+                                            <td className="text-center py-1.5">
+                                                <Checkbox checked={chmodPerms.ownerExecute} onCheckedChange={(c) => setChmodPerms(p => ({ ...p, ownerExecute: c === true }))} />
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td className="py-1.5 text-muted-foreground">用户组</td>
+                                            <td className="text-center py-1.5">
+                                                <Checkbox checked={chmodPerms.groupRead} onCheckedChange={(c) => setChmodPerms(p => ({ ...p, groupRead: c === true }))} />
+                                            </td>
+                                            <td className="text-center py-1.5">
+                                                <Checkbox checked={chmodPerms.groupWrite} onCheckedChange={(c) => setChmodPerms(p => ({ ...p, groupWrite: c === true }))} />
+                                            </td>
+                                            <td className="text-center py-1.5">
+                                                <Checkbox checked={chmodPerms.groupExecute} onCheckedChange={(c) => setChmodPerms(p => ({ ...p, groupExecute: c === true }))} />
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td className="py-1.5 text-muted-foreground">其他人</td>
+                                            <td className="text-center py-1.5">
+                                                <Checkbox checked={chmodPerms.otherRead} onCheckedChange={(c) => setChmodPerms(p => ({ ...p, otherRead: c === true }))} />
+                                            </td>
+                                            <td className="text-center py-1.5">
+                                                <Checkbox checked={chmodPerms.otherWrite} onCheckedChange={(c) => setChmodPerms(p => ({ ...p, otherWrite: c === true }))} />
+                                            </td>
+                                            <td className="text-center py-1.5">
+                                                <Checkbox checked={chmodPerms.otherExecute} onCheckedChange={(c) => setChmodPerms(p => ({ ...p, otherExecute: c === true }))} />
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        {/* Quick Presets */}
+                        <div className="space-y-2">
+                            <Label className="text-sm text-muted-foreground">快捷设置</Label>
+                            <div className="grid grid-cols-2 gap-2 mt-1">
+                                <Button variant="outline" size="sm" className="text-xs" onClick={() => setChmodPreset('755')}>
+                                    755 可执行
+                                </Button>
+                                <Button variant="outline" size="sm" className="text-xs" onClick={() => setChmodPreset('644')}>
+                                    644 普通文件
+                                </Button>
+                                <Button variant="outline" size="sm" className="text-xs" onClick={() => setChmodPreset('777')}>
+                                    777 完全开放
+                                </Button>
+                                <Button variant="outline" size="sm" className="text-xs" onClick={() => setChmodPreset('600')}>
+                                    600 仅所有者
+                                </Button>
+                            </div>
+                        </div>
+
+                        {/* Current Value Display */}
+                        <div className="text-sm text-muted-foreground">
+                            当前权限值: <span className="font-mono text-foreground">{getChmodValue()}</span>
+                        </div>
+
+                        {chmodTarget?.is_dir && (
+                            <div className="flex items-center gap-2">
+                                <Checkbox
+                                    id="chmod-recursive"
+                                    checked={chmodRecursive}
+                                    onCheckedChange={(checked) => setChmodRecursive(checked === true)}
+                                />
+                                <Label htmlFor="chmod-recursive" className="text-sm cursor-pointer">
+                                    递归修改子文件/文件夹权限
+                                </Label>
+                            </div>
+                        )}
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setChmodDialogOpen(false)} disabled={isChangingPermission}>
+                            取消
+                        </Button>
+                        <Button onClick={handleChmod} disabled={isChangingPermission}>
+                            {isChangingPermission ? '修改中...' : '确定'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
             {/* File Opening Loading Overlay */}
             {openingFile && (
