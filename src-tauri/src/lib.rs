@@ -4,6 +4,7 @@ mod storage;
 mod commands;
 mod keychain;
 mod port_forward;
+mod logging;
 
 // Plugin system modules
 mod plugin_types;
@@ -12,8 +13,42 @@ mod plugin_manager;
 mod plugin_commands;
 mod plugin_window;
 
+use log::info;
+
+/// Get log directory path
+#[tauri::command]
+fn get_log_directory() -> String {
+    logging::get_log_dir().to_string_lossy().to_string()
+}
+
+/// List all log files
+#[tauri::command]
+fn list_log_files() -> Vec<String> {
+    logging::list_log_files()
+        .into_iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect()
+}
+
+/// Read log file content
+#[tauri::command]
+fn read_log_file(path: String) -> Result<String, String> {
+    let path = std::path::PathBuf::from(path);
+    logging::read_log_file(&path).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Initialize logging system
+    if let Err(e) = logging::init_logging() {
+        eprintln!("Failed to initialize logging: {}", e);
+    }
+    
+    // Cleanup old logs (keep last 7 days)
+    logging::cleanup_old_logs(7);
+    
+    info!("Initializing Tauri application");
+    
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -50,9 +85,12 @@ pub fn run() {
             plugin_commands::fetch_marketplace, plugin_commands::install_from_marketplace,
             plugin_commands::load_plugin_bundle,
             // Plugin window
-            plugin_window::open_plugin_window
+            plugin_window::open_plugin_window,
+            // Logging commands
+            get_log_directory, list_log_files, read_log_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
 

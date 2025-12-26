@@ -7,6 +7,7 @@ use std::io::Read;
 use std::io::Write;
 use ssh2::Session;
 use tauri::{AppHandle, Emitter};
+use log::{info, warn, error, debug};
 
 // SSH connection configuration constants
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -261,14 +262,27 @@ pub async fn connect(
     let key_path_clone = private_key_path.clone();
     let idle_timeout_clone = idle_timeout;
 
+    info!("[SSH:{}] Initiating connection to {}@{}:{} (auth: {}, idle_timeout: {}min)", 
+          id, user, host, ssh_port, auth, idle_timeout);
+
     // Run blocking SSH operations in a separate thread pool
     let (conn, channel) = tokio::task::spawn_blocking(move || -> Result<(Arc<Connection>, ssh2::Channel), String> {
         // Connect to the SSH server with timeout
         let addr = format!("{}:{}", host_clone, port_clone);
+        debug!("[SSH] Connecting to TCP {}...", addr);
+        
         let tcp = TcpStream::connect_timeout(
-            &addr.parse().map_err(|e| format!("Invalid address: {}", e))?,
+            &addr.parse().map_err(|e| {
+                error!("[SSH] Invalid address {}: {}", addr, e);
+                format!("Invalid address: {}", e)
+            })?,
             TCP_CONNECT_TIMEOUT
-        ).map_err(|e| format!("Connection timeout: {}", e))?;
+        ).map_err(|e| {
+            error!("[SSH] TCP connection failed to {}: {}", addr, e);
+            format!("Connection timeout: {}", e)
+        })?;
+        
+        info!("[SSH] TCP connection established to {}", addr);
         
         // Set TCP read/write timeouts for better stability
         tcp.set_read_timeout(Some(TCP_READ_TIMEOUT)).ok();
@@ -279,53 +293,88 @@ pub async fn connect(
         
         let mut sess = Session::new().unwrap();
         sess.set_tcp_stream(tcp);
-        sess.handshake().map_err(|e| e.to_string())?;
+        
+        debug!("[SSH] Performing SSH handshake...");
+        sess.handshake().map_err(|e| {
+            error!("[SSH] SSH handshake failed: {}", e);
+            e.to_string()
+        })?;
+        info!("[SSH] SSH handshake completed");
 
         // Auth based on type
+        debug!("[SSH] Authenticating with method: {}", auth_clone);
         match auth_clone.as_str() {
             "Key" => {
                 // Private key authentication
                 let key_path = key_path_clone.ok_or("Private key path not provided")?;
                 let key_path = std::path::Path::new(&key_path);
+                debug!("[SSH] Using private key: {:?}", key_path);
                 
                 // Try with password (passphrase) if provided, otherwise without
                 if let Some(passphrase) = &password_clone {
                     sess.userauth_pubkey_file(&user_clone, None, key_path, Some(passphrase))
-                        .map_err(|e| format!("Key authentication failed: {}", e))?;
+                        .map_err(|e| {
+                            error!("[SSH] Key authentication failed: {}", e);
+                            format!("Key authentication failed: {}", e)
+                        })?;
                 } else {
                     sess.userauth_pubkey_file(&user_clone, None, key_path, None)
-                        .map_err(|e| format!("Key authentication failed: {}", e))?;
+                        .map_err(|e| {
+                            error!("[SSH] Key authentication failed: {}", e);
+                            format!("Key authentication failed: {}", e)
+                        })?;
                 }
             },
             "Agent" => {
                 // SSH Agent authentication
                 sess.userauth_agent(&user_clone)
-                    .map_err(|e| format!("SSH Agent authentication failed: {}", e))?;
+                    .map_err(|e| {
+                        error!("[SSH] SSH Agent authentication failed: {}", e);
+                        format!("SSH Agent authentication failed: {}", e)
+                    })?;
             },
             _ => {
                 // Password authentication (default)
                 if let Some(pwd) = &password_clone {
                     sess.userauth_password(&user_clone, pwd)
-                        .map_err(|e| format!("Password authentication failed: {}", e))?;
+                        .map_err(|e| {
+                            error!("[SSH] Password authentication failed: {}", e);
+                            format!("Password authentication failed: {}", e)
+                        })?;
                 } else {
+                    error!("[SSH] Password not provided for password authentication");
                     return Err("Password not provided for password authentication".into());
                 }
             }
         }
         
         if !sess.authenticated() {
+            error!("[SSH] Authentication failed - not authenticated after auth attempt");
             return Err("Authentication failed".into());
         }
+        info!("[SSH] Authentication successful (method: {})", auth_clone);
 
         // Configure SSH keepalive to prevent idle disconnection
         // This sends a keepalive packet every 30 seconds
         // If the server doesn't respond after 3 keepalives, the connection will be considered dead
         sess.set_keepalive(true, 30);
+        debug!("[SSH] SSH keepalive configured: interval=30s");
 
         // Channel
-        let mut channel = sess.channel_session().map_err(|e| e.to_string())?;
-        channel.request_pty("xterm", None, Some((80, 24, 0, 0))).map_err(|e| e.to_string())?;
-        channel.shell().map_err(|e| e.to_string())?;
+        debug!("[SSH] Opening session channel...");
+        let mut channel = sess.channel_session().map_err(|e| {
+            error!("[SSH] Failed to open channel: {}", e);
+            e.to_string()
+        })?;
+        channel.request_pty("xterm", None, Some((80, 24, 0, 0))).map_err(|e| {
+            error!("[SSH] Failed to request PTY: {}", e);
+            e.to_string()
+        })?;
+        channel.shell().map_err(|e| {
+            error!("[SSH] Failed to start shell: {}", e);
+            e.to_string()
+        })?;
+        info!("[SSH] PTY channel established");
         
         // Set non-blocking for the read loop
         sess.set_blocking(false);
@@ -346,6 +395,8 @@ pub async fn connect(
 
     state.connections.lock().unwrap().insert(id.clone(), conn.clone());
     
+    info!("[SSH:{}] Connection established successfully", id);
+    
     // Spawn keepalive thread to monitor connection health
     // Note: SSH keepalive is configured via sess.set_keepalive() above
     // This thread monitors the connection state and idle timeout
@@ -354,11 +405,14 @@ pub async fn connect(
     let app_keepalive = app.clone();
     thread::spawn(move || {
         let mut failures: u32 = 0;
+        debug!("[SSH:{}] Keepalive thread started", id_keepalive);
+        
         loop {
             thread::sleep(KEEPALIVE_INTERVAL);
             
             // Check if connection is still marked as alive
             if !conn_keepalive.alive.load(Ordering::Relaxed) {
+                debug!("[SSH:{}] Keepalive: connection marked as dead, exiting", id_keepalive);
                 break;
             }
             
@@ -372,6 +426,8 @@ pub async fn connect(
                         // User has been idle too long, disconnect
                         conn_keepalive.alive.store(false, Ordering::Relaxed);
                         let idle_mins = idle_duration.as_secs() / 60;
+                        warn!("[SSH:{}] Idle timeout reached: {}min idle, timeout={}min", 
+                              id_keepalive, idle_mins, conn_keepalive.idle_timeout_minutes);
                         let _ = app_keepalive.emit("connection-lost", ConnectionLostPayload {
                             id: id_keepalive.clone(),
                             reason: format!("空闲超时 ({}分钟无操作)", idle_mins),
@@ -397,11 +453,15 @@ pub async fn connect(
                 failures = 0;
             } else {
                 failures += 1;
+                warn!("[SSH:{}] Keepalive: channel unhealthy, failure count: {}/{}", 
+                      id_keepalive, failures, KEEPALIVE_MAX_FAILURES);
             }
             
             if failures >= KEEPALIVE_MAX_FAILURES {
                 // Connection appears dead, notify frontend
                 conn_keepalive.alive.store(false, Ordering::Relaxed);
+                error!("[SSH:{}] Connection health check failed after {} attempts", 
+                       id_keepalive, failures);
                 let _ = app_keepalive.emit("connection-lost", ConnectionLostPayload {
                     id: id_keepalive.clone(),
                     reason: "Connection health check failed".to_string(),
@@ -409,6 +469,7 @@ pub async fn connect(
                 break;
             }
         }
+        debug!("[SSH:{}] Keepalive thread exited", id_keepalive);
     });
     
     // Spawn reader thread
@@ -429,9 +490,12 @@ pub async fn connect(
         const POLL_SLOW: Duration = Duration::from_millis(50);  // Slow poll when idle (saves CPU)
         const FAST_POLL_DURATION: Duration = Duration::from_millis(100); // Stay fast for 100ms after data
         
+        debug!("[SSH:{}] Reader thread started", id_clone2);
+        
         loop {
             // Check if connection was marked as dead by keepalive thread
             if !conn_clone.alive.load(Ordering::Relaxed) {
+                debug!("[SSH:{}] Reader: connection marked as dead, exiting", id_clone2);
                 break;
             }
             
@@ -445,6 +509,7 @@ pub async fn connect(
                          match channel.read(&mut buf) {
                              Ok(0) => {
                                  // EOF - connection closed gracefully
+                                 warn!("[SSH:{}] Reader: EOF received, connection closed by remote", id_clone2);
                                  disconnect_reason = Some("Connection closed by remote host".to_string());
                                  should_break = true;
                              }
@@ -467,12 +532,20 @@ pub async fn connect(
                                         || e.kind() == std::io::ErrorKind::Interrupted {
                                      // Transient errors - retry
                                      consecutive_errors += 1;
+                                     if consecutive_errors == 1 {
+                                         debug!("[SSH:{}] Reader: transient error: {} (count: {})", 
+                                                id_clone2, e, consecutive_errors);
+                                     }
                                      if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                         error!("[SSH:{}] Reader: too many transient errors ({}/{}): {}", 
+                                                id_clone2, consecutive_errors, MAX_CONSECUTIVE_ERRORS, e);
                                          disconnect_reason = Some(format!("Connection unstable: {}", e));
                                          should_break = true;
                                      }
                                  } else {
-                                     // Serious error
+                                     // Serious error - log with full details
+                                     error!("[SSH:{}] Reader: connection error: {} (kind: {:?})", 
+                                            id_clone2, e, e.kind());
                                      disconnect_reason = Some(format!("Connection error: {}", e));
                                      should_break = true;
                                  }
@@ -480,12 +553,16 @@ pub async fn connect(
                          }
                      } else {
                          // Channel is None, connection was closed
+                         warn!("[SSH:{}] Reader: channel is None, connection closed", id_clone2);
                          should_break = true;
                      }
                 } else {
                     // Couldn't acquire lock, connection might be shutting down
                     consecutive_errors += 1;
+                    warn!("[SSH:{}] Reader: lock acquisition failed (count: {})", 
+                          id_clone2, consecutive_errors);
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        error!("[SSH:{}] Reader: lock acquisition failed too many times", id_clone2);
                         disconnect_reason = Some("Lock acquisition failed".to_string());
                         should_break = true;
                     }
@@ -497,10 +574,11 @@ pub async fn connect(
                 conn_clone.alive.store(false, Ordering::Relaxed);
                 
                 // Emit connection-lost event to notify frontend
-                if let Some(reason) = disconnect_reason {
+                if let Some(ref reason) = disconnect_reason {
+                    error!("[SSH:{}] Disconnecting: {}", id_clone2, reason);
                     let _ = app.emit("connection-lost", ConnectionLostPayload { 
                         id: id_clone2.clone(), 
-                        reason 
+                        reason: reason.clone()
                     });
                 }
                 break;
@@ -515,6 +593,7 @@ pub async fn connect(
             };
             thread::sleep(poll_interval);
         }
+        debug!("[SSH:{}] Reader thread exited", id_clone2);
     });
     
     Ok("Connected".into())
@@ -564,6 +643,8 @@ pub fn disconnect(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    info!("[SSH:{}] Disconnect requested", id);
+    
     // Remove connection from state
     let mut connections = state.connections.lock().unwrap();
     if let Some(conn) = connections.remove(&id) {
@@ -578,6 +659,9 @@ pub fn disconnect(
             }
             *lock = None;
         }
+        info!("[SSH:{}] Connection closed", id);
+    } else {
+        debug!("[SSH:{}] No connection found to disconnect", id);
     }
     Ok(())
 }

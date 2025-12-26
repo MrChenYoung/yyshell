@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { Settings, Plus, Minus, RotateCcw, Sun, Moon, Monitor, Download, Upload, AlertCircle, CheckCircle, Lock, Eye, EyeOff, Server, Zap, Network, History, Plug, FileCode2 } from "lucide-react";
+import { Settings, Plus, Minus, RotateCcw, Sun, Moon, Monitor, Download, Upload, AlertCircle, CheckCircle, Lock, Eye, EyeOff, Server, Zap, Network, History, Plug, FileCode2, FolderOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -649,6 +649,34 @@ export function SettingsPopover() {
                             </div>
                             <p className="text-[10px] text-muted-foreground mt-1.5">
                                 支持可选密码加密保护
+                            </p>
+                        </div>
+
+                        {/* Debug & Logs Section */}
+                        <div className="pt-2 border-t border-border">
+                            <span className="text-sm font-medium">调试日志</span>
+                            <div className="flex gap-2 mt-2">
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="flex-1 text-xs"
+                                    onClick={async () => {
+                                        try {
+                                            const { invoke } = await import('@tauri-apps/api/core');
+                                            const { openPath } = await import('@tauri-apps/plugin-opener');
+                                            const logDir = await invoke('get_log_directory') as string;
+                                            await openPath(logDir);
+                                        } catch (err) {
+                                            console.error('Failed to open log directory:', err);
+                                        }
+                                    }}
+                                >
+                                    <FolderOpen className="w-3 h-3 mr-1" />
+                                    打开日志目录
+                                </Button>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground mt-1.5">
+                                日志按日期分割，保留7天
                             </p>
                         </div>
                     </div>

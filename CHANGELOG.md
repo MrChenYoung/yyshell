@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2024-12-26
+
+### Added
+- **SSH 连接日志系统** - 帮助诊断连接问题
+  - 按日期分割的日志文件（保留最近7天）
+  - 详细记录连接、认证、通道建立过程
+  - 记录断开原因：EOF、读取错误、超时等
+  - 设置中新增"打开日志目录"按钮
+- **日志级别**：DEBUG 写入文件，INFO 同时输出到终端
+
+### Technical
+- 日志存储路径：`~/Library/Application Support/com.yyshell.app/logs/`
+- 日志格式：`yyshell-YYYY-MM-DD.log`
+
 ## [1.0.3] - 2024-12-26
 
 ### Added
