@@ -8,7 +8,7 @@ import "xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2, Send, Eye, EyeOff, Save, Puzzle } from "lucide-react";
+import { Loader2, Send, Eye, EyeOff, Save, Puzzle, RefreshCw, Pencil } from "lucide-react";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useServerStore } from "@/stores/useServerStore";
 import { useTabStore } from "@/stores/useTabStore";
@@ -260,6 +260,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
         const p = connectPassword ?? password;
         const auth = authType || serverInfo?.auth_type || 'Password';
         const keyPath = privateKeyPath || serverInfo?.private_key_path;
+        const { idleTimeoutMinutes } = useSettingsStore.getState();
 
         if (!h || !u) return;
 
@@ -272,7 +273,8 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
                 user: u,
                 password: p || null,
                 authType: auth,
-                privateKeyPath: keyPath || null
+                privateKeyPath: keyPath || null,
+                idleTimeoutMinutes: idleTimeoutMinutes
             });
 
             // Start monitoring after connection
@@ -313,7 +315,43 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
         } finally {
             setConnecting(false);
         }
-    }, [connectionId, host, user, password, onConnected, onDisconnected, serverId, setConnectionStatus, updateTab, tabId]);
+    }, [connectionId, host, user, password, onConnected, onDisconnected, serverId, setConnectionStatus, updateTab, tabId, currentTab?.serverId, serverInfo?.auth_type, serverInfo?.private_key_path]);
+
+    // Quick reconnect - disconnect and reconnect
+    const handleQuickReconnect = useCallback(async () => {
+        if (connecting) return;
+
+        xtermRef.current?.writeln('\r\n\x1b[1;33m正在断开连接...\x1b[0m');
+
+        // First disconnect
+        try {
+            await invoke("disconnect", { id: connectionId });
+        } catch {
+            // Ignore disconnect errors
+        }
+
+        setConnected(false);
+        connectedRef.current = false;
+
+        // Clear terminal for fresh connection 
+        xtermRef.current?.clear();
+        xtermRef.current?.writeln('\x1b[1;33m正在重新连接...\x1b[0m\r\n');
+
+        // Reconnect with current server info
+        if (serverInfo) {
+            handleConnect(serverInfo.host, serverInfo.username, serverInfo.password, serverInfo.auth_type, serverInfo.private_key_path);
+        } else if (currentTab?.quickConnectInfo) {
+            const qc = currentTab.quickConnectInfo;
+            handleConnect(qc.host, qc.username, qc.password);
+        }
+    }, [connecting, connectionId, serverInfo, currentTab, handleConnect]);
+
+    // Edit server - emit event to open edit dialog in sidebar
+    const handleEditServer = useCallback(() => {
+        if (serverId) {
+            emit('edit-server', { serverId });
+        }
+    }, [serverId]);
 
     // Initialize terminal
     useEffect(() => {
@@ -451,7 +489,8 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
                         user: serverInfo.username,
                         password: serverInfo.password || null,
                         authType: serverInfo.auth_type || 'Password',
-                        privateKeyPath: serverInfo.private_key_path || null
+                        privateKeyPath: serverInfo.private_key_path || null,
+                        idleTimeoutMinutes: useSettingsStore.getState().idleTimeoutMinutes
                     });
 
                     // Start monitoring after connection
@@ -509,7 +548,8 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
                     user: event.payload.username,
                     password: event.payload.password,
                     authType: serverInfo?.auth_type || 'Password',
-                    privateKeyPath: serverInfo?.private_key_path || null
+                    privateKeyPath: serverInfo?.private_key_path || null,
+                    idleTimeoutMinutes: useSettingsStore.getState().idleTimeoutMinutes
                 });
 
                 // Start monitoring after connection
@@ -701,17 +741,20 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
                 )}
             </div>
 
-            {/* Bottom command input bar */}
-            {connected && (
+            {/* Bottom command input bar - always visible when there's server info */}
+            {(serverInfo || currentTab?.quickConnectInfo) && (
                 <div className={`flex items-center gap-2 px-2 py-1.5 border-t ${theme === 'light' ? 'bg-[#eaeef2] border-[#d0d7de]' : 'bg-[#161b22] border-[#30363d]'}`}>
-                    <span className="text-xs text-muted-foreground whitespace-nowrap">命令输入</span>
+                    <span className={`text-xs whitespace-nowrap ${connected ? 'text-muted-foreground' : 'text-red-400'}`}>
+                        {connected ? '命令输入' : '已断开'}
+                    </span>
                     <Input
-                        className={`flex-1 h-7 text-sm focus-visible:ring-1 focus-visible:ring-primary ${theme === 'light' ? 'bg-[#f6f8fa] border-[#d0d7de]' : 'bg-[#0d1117] border-[#30363d]'}`}
-                        placeholder="输入命令按 Enter 发送"
+                        className={`flex-1 h-7 text-sm focus-visible:ring-1 focus-visible:ring-primary ${theme === 'light' ? 'bg-[#f6f8fa] border-[#d0d7de]' : 'bg-[#0d1117] border-[#30363d]'} ${!connected ? 'opacity-50' : ''}`}
+                        placeholder={connected ? "输入命令按 Enter 发送" : "连接已断开"}
                         value={commandInput}
                         onChange={e => setCommandInput(e.target.value)}
+                        disabled={!connected}
                         onKeyDown={e => {
-                            if (e.key === 'Enter' && !e.shiftKey) {
+                            if (e.key === 'Enter' && !e.shiftKey && connected) {
                                 e.preventDefault();
                                 handleSendCommand();
                             }
@@ -721,24 +764,67 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
                         size="sm"
                         className="h-7 px-2"
                         onClick={() => handleSendCommand()}
-                        disabled={!commandInput.trim()}
+                        disabled={!connected || !commandInput.trim()}
                     >
                         <Send className="w-3.5 h-3.5" />
                     </Button>
 
+                    {/* Quick action buttons */}
+                    <TooltipProvider delayDuration={300}>
+                        <div className="flex items-center gap-1 pl-2 border-l border-border/50">
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-7 px-2 hover:bg-primary/20 hover:text-primary"
+                                        onClick={handleQuickReconnect}
+                                        disabled={connecting}
+                                    >
+                                        <RefreshCw className={`w-3.5 h-3.5 ${connecting ? 'animate-spin' : ''}`} />
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="text-xs">
+                                    {connected ? '重新连接' : '快速重连'}
+                                </TooltipContent>
+                            </Tooltip>
+
+                            {/* Only show edit button for saved servers */}
+                            {serverId && !isQuickConnect && (
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-7 px-2 hover:bg-primary/20 hover:text-primary"
+                                            onClick={handleEditServer}
+                                        >
+                                            <Pencil className="w-3.5 h-3.5" />
+                                        </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top" className="text-xs">
+                                        编辑服务器
+                                    </TooltipContent>
+                                </Tooltip>
+                            )}
+                        </div>
+                    </TooltipProvider>
+
                     {/* Plugin shortcuts - only show installed and enabled plugins */}
-                    <EnabledPluginButtons
-                        serverInfo={serverInfo ? {
-                            id: serverId || `quick-${tabId}`,
-                            name: currentTab?.title || serverInfo.host,
-                            host: serverInfo.host,
-                            port: serverInfo.port || 22,
-                            username: serverInfo.username,
-                            password: serverInfo.password,
-                            auth_type: serverInfo.auth_type,
-                            private_key_path: serverInfo.private_key_path,
-                        } : undefined}
-                    />
+                    {connected && (
+                        <EnabledPluginButtons
+                            serverInfo={serverInfo ? {
+                                id: serverId || `quick-${tabId}`,
+                                name: currentTab?.title || serverInfo.host,
+                                host: serverInfo.host,
+                                port: serverInfo.port || 22,
+                                username: serverInfo.username,
+                                password: serverInfo.password,
+                                auth_type: serverInfo.auth_type,
+                                private_key_path: serverInfo.private_key_path,
+                            } : undefined}
+                        />
+                    )}
                 </div>
             )}
         </div>

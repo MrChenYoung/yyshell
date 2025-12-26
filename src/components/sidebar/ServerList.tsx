@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { Plus, Server, Folder, ChevronRight, ChevronDown, MoreVertical, Trash2, Edit, Zap, FolderPlus, GripVertical, FolderX, Pencil, FolderInput, Terminal, FileText, Globe, Key, ArrowUp, ArrowDown, ChevronsUp, ChevronsDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -415,6 +416,25 @@ export function ServerList({ onConnect, onNewTerminal }: ServerListProps) {
         const serverGroups = [...new Set(servers.map(s => s.group || '默认'))];
         syncGroupsFromServers(serverGroups);
     }, [servers, syncGroupsFromServers]);
+
+    // Listen for edit-server event from terminal
+    useEffect(() => {
+        let unlisten: UnlistenFn | null = null;
+
+        listen<{ serverId: string }>('edit-server', (event) => {
+            const server = servers.find(s => s.id === event.payload.serverId);
+            if (server) {
+                setEditingServer(server);
+                setDialogOpen(true);
+            }
+        }).then(fn => {
+            unlisten = fn;
+        });
+
+        return () => {
+            if (unlisten) unlisten();
+        };
+    }, [servers]);
 
     // Group servers by their group property
     const groupedServers = servers.reduce((acc, server) => {

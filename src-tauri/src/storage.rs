@@ -246,6 +246,12 @@ impl Default for FontSettings {
 pub struct AppSettings {
     pub fonts: FontSettings,
     pub theme: String, // "light", "dark", "system"
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_minutes: u32, // 0 = never disconnect, otherwise minutes
+}
+
+fn default_idle_timeout() -> u32 {
+    30 // Default 30 minutes
 }
 
 impl Default for AppSettings {
@@ -253,6 +259,7 @@ impl Default for AppSettings {
         Self {
             fonts: FontSettings::default(),
             theme: "dark".to_string(),
+            idle_timeout_minutes: 30, // 30 minutes default
         }
     }
 }

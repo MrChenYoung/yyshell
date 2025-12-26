@@ -15,6 +15,13 @@ import {
     DialogTitle,
     DialogFooter,
 } from "@/components/ui/dialog";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useSettingsStore, ThemeMode } from "@/stores/useSettingsStore";
 import { useServerStore } from "@/stores/useServerStore";
@@ -86,6 +93,45 @@ function ThemeButton({ mode, label, icon, current, onClick }: ThemeButtonProps) 
     );
 }
 
+// Idle timeout options
+const IDLE_TIMEOUT_OPTIONS = [
+    { value: 0, label: '永不断开' },
+    { value: 15, label: '15 分钟' },
+    { value: 30, label: '30 分钟' },
+    { value: 60, label: '1 小时' },
+    { value: 120, label: '2 小时' },
+    { value: 480, label: '8 小时' },
+];
+
+function IdleTimeoutControl() {
+    const { idleTimeoutMinutes, setIdleTimeout } = useSettingsStore();
+
+    return (
+        <div className="pt-2 border-t border-border">
+            <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">空闲断开</span>
+                <Select
+                    value={String(idleTimeoutMinutes)}
+                    onValueChange={(value) => setIdleTimeout(Number(value))}
+                >
+                    <SelectTrigger className="w-24 h-7 text-xs">
+                        <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                        {IDLE_TIMEOUT_OPTIONS.map(opt => (
+                            <SelectItem key={opt.value} value={String(opt.value)} className="text-xs">
+                                {opt.label}
+                            </SelectItem>
+                        ))}
+                    </SelectContent>
+                </Select>
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1">
+                终端连接无操作超时自动断开
+            </p>
+        </div>
+    );
+}
 export function SettingsPopover() {
     const { resetFonts, theme, setTheme, fonts, loadSettings } = useSettingsStore();
     const { servers, loadServers } = useServerStore();
@@ -574,6 +620,9 @@ export function SettingsPopover() {
                             <FontControl label="系统监控" area="monitor" />
                             <FontControl label="文件管理" area="fileManager" />
                         </div>
+
+                        {/* Idle Timeout Section */}
+                        <IdleTimeoutControl />
 
                         {/* Backup & Restore Section */}
                         <div className="pt-2 border-t border-border">

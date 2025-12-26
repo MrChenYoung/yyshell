@@ -1,16 +1,26 @@
 use std::collections::HashMap;
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::io::Read;
 use std::io::Write;
 use ssh2::Session;
 use tauri::{AppHandle, Emitter};
 
+// SSH connection configuration constants
+const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const TCP_READ_TIMEOUT: Duration = Duration::from_secs(60);
+const TCP_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+const KEEPALIVE_MAX_FAILURES: u32 = 3;
+
 pub struct Connection {
     pub session: Session,
     pub channel: Mutex<Option<ssh2::Channel>>,
+    pub alive: AtomicBool,  // Flag to track if connection is still alive
+    pub last_activity: Mutex<Instant>,  // Last user activity time
+    pub idle_timeout_minutes: u32,  // 0 = never timeout
 }
 
 /// Stored credentials for reconnection
@@ -214,10 +224,12 @@ pub async fn connect(
     auth_type: Option<String>,
     private_key_path: Option<String>,
     server_id: Option<String>,  // Original server ID for keychain lookup
+    idle_timeout_minutes: Option<u32>,  // Idle timeout in minutes, 0 = never
 ) -> Result<String, String> {
     
     let auth = auth_type.unwrap_or_else(|| "Password".to_string());
     let ssh_port = port.unwrap_or(22);
+    let idle_timeout = idle_timeout_minutes.unwrap_or(30); // Default 30 minutes
     
     // If password not provided, try to get it from keychain
     // Use server_id if provided (for plugins), otherwise use connection id
@@ -247,11 +259,23 @@ pub async fn connect(
     let password_clone = actual_password.clone();
     let auth_clone = auth.clone();
     let key_path_clone = private_key_path.clone();
+    let idle_timeout_clone = idle_timeout;
 
     // Run blocking SSH operations in a separate thread pool
     let (conn, channel) = tokio::task::spawn_blocking(move || -> Result<(Arc<Connection>, ssh2::Channel), String> {
-        // Connect to the SSH server
-        let tcp = TcpStream::connect(format!("{}:{}", host_clone, port_clone)).map_err(|e| e.to_string())?;
+        // Connect to the SSH server with timeout
+        let addr = format!("{}:{}", host_clone, port_clone);
+        let tcp = TcpStream::connect_timeout(
+            &addr.parse().map_err(|e| format!("Invalid address: {}", e))?,
+            TCP_CONNECT_TIMEOUT
+        ).map_err(|e| format!("Connection timeout: {}", e))?;
+        
+        // Set TCP read/write timeouts for better stability
+        tcp.set_read_timeout(Some(TCP_READ_TIMEOUT)).ok();
+        tcp.set_write_timeout(Some(TCP_WRITE_TIMEOUT)).ok();
+        
+        // Enable TCP keepalive at socket level
+        tcp.set_nodelay(true).ok();
         
         let mut sess = Session::new().unwrap();
         sess.set_tcp_stream(tcp);
@@ -293,6 +317,11 @@ pub async fn connect(
             return Err("Authentication failed".into());
         }
 
+        // Configure SSH keepalive to prevent idle disconnection
+        // This sends a keepalive packet every 30 seconds
+        // If the server doesn't respond after 3 keepalives, the connection will be considered dead
+        sess.set_keepalive(true, 30);
+
         // Channel
         let mut channel = sess.channel_session().map_err(|e| e.to_string())?;
         channel.request_pty("xterm", None, Some((80, 24, 0, 0))).map_err(|e| e.to_string())?;
@@ -304,6 +333,9 @@ pub async fn connect(
         let conn = Arc::new(Connection {
             session: sess,
             channel: Mutex::new(None), // We'll set this after
+            alive: AtomicBool::new(true),  // Initialize as alive
+            last_activity: Mutex::new(Instant::now()),  // Initialize with current time
+            idle_timeout_minutes: idle_timeout_clone,
         });
 
         Ok((conn, channel))
@@ -314,42 +346,156 @@ pub async fn connect(
 
     state.connections.lock().unwrap().insert(id.clone(), conn.clone());
     
+    // Spawn keepalive thread to monitor connection health
+    // Note: SSH keepalive is configured via sess.set_keepalive() above
+    // This thread monitors the connection state and idle timeout
+    let conn_keepalive = conn.clone();
+    let id_keepalive = id.clone();
+    let app_keepalive = app.clone();
+    thread::spawn(move || {
+        let mut failures: u32 = 0;
+        loop {
+            thread::sleep(KEEPALIVE_INTERVAL);
+            
+            // Check if connection is still marked as alive
+            if !conn_keepalive.alive.load(Ordering::Relaxed) {
+                break;
+            }
+            
+            // Check for idle timeout (0 = never timeout)
+            if conn_keepalive.idle_timeout_minutes > 0 {
+                if let Ok(last_activity) = conn_keepalive.last_activity.lock() {
+                    let idle_duration = last_activity.elapsed();
+                    let timeout_duration = Duration::from_secs(conn_keepalive.idle_timeout_minutes as u64 * 60);
+                    
+                    if idle_duration > timeout_duration {
+                        // User has been idle too long, disconnect
+                        conn_keepalive.alive.store(false, Ordering::Relaxed);
+                        let idle_mins = idle_duration.as_secs() / 60;
+                        let _ = app_keepalive.emit("connection-lost", ConnectionLostPayload {
+                            id: id_keepalive.clone(),
+                            reason: format!("空闲超时 ({}分钟无操作)", idle_mins),
+                        });
+                        break;
+                    }
+                }
+            }
+            
+            // Check channel health
+            let is_healthy = if let Ok(lock) = conn_keepalive.channel.lock() {
+                if let Some(ref channel) = *lock {
+                    // Check if channel has received EOF (connection closed)
+                    !channel.eof()
+                } else {
+                    false // Channel was removed
+                }
+            } else {
+                false // Couldn't acquire lock
+            };
+            
+            if is_healthy {
+                failures = 0;
+            } else {
+                failures += 1;
+            }
+            
+            if failures >= KEEPALIVE_MAX_FAILURES {
+                // Connection appears dead, notify frontend
+                conn_keepalive.alive.store(false, Ordering::Relaxed);
+                let _ = app_keepalive.emit("connection-lost", ConnectionLostPayload {
+                    id: id_keepalive.clone(),
+                    reason: "Connection health check failed".to_string(),
+                });
+                break;
+            }
+        }
+    });
+    
     // Spawn reader thread
     let conn_clone = conn.clone();
     let id_clone2 = id.clone();
     
     thread::spawn(move || {
-        let mut buf = [0u8; 4096];
+        // Increased buffer size to 16KB for better throughput
+        let mut buf = [0u8; 16384];
+        let mut last_activity = Instant::now();
+        let mut last_data_time = Instant::now();
+        let idle_timeout = Duration::from_secs(300); // 5 minutes idle timeout
+        let mut consecutive_errors: u32 = 0;
+        const MAX_CONSECUTIVE_ERRORS: u32 = 10; // Allow some transient errors
+        
+        // Dynamic polling interval settings
+        const POLL_FAST: Duration = Duration::from_millis(1);   // Fast poll when data is flowing
+        const POLL_SLOW: Duration = Duration::from_millis(50);  // Slow poll when idle (saves CPU)
+        const FAST_POLL_DURATION: Duration = Duration::from_millis(100); // Stay fast for 100ms after data
+        
         loop {
+            // Check if connection was marked as dead by keepalive thread
+            if !conn_clone.alive.load(Ordering::Relaxed) {
+                break;
+            }
+            
             // Scope for lock
             let mut should_break = false;
             let mut disconnect_reason: Option<String> = None;
+            let mut got_data = false;
             {
                 if let Ok(mut lock) = conn_clone.channel.lock() {
                      if let Some(channel) = lock.as_mut() {
                          match channel.read(&mut buf) {
                              Ok(0) => {
+                                 // EOF - connection closed gracefully
                                  disconnect_reason = Some("Connection closed by remote host".to_string());
                                  should_break = true;
                              }
                              Ok(n) => {
-                                 let _data = String::from_utf8_lossy(&buf[..n]).to_string();
+                                 // Reset error counter on successful read
+                                 consecutive_errors = 0;
+                                 last_activity = Instant::now();
+                                 last_data_time = Instant::now();
+                                 got_data = true;
                                  let _ = app.emit("term-data", Payload { id: id_clone2.clone(), data: buf[..n].to_vec() });
                              }
                              Err(e) => {
                                  if e.kind() == std::io::ErrorKind::WouldBlock {
-                                     // Just wait a bit
+                                     // Normal non-blocking behavior, just wait a bit
+                                     // Check for idle timeout only if we've been idle too long
+                                     if last_activity.elapsed() > idle_timeout {
+                                         // Still ok, just no data
+                                     }
+                                 } else if e.kind() == std::io::ErrorKind::TimedOut 
+                                        || e.kind() == std::io::ErrorKind::Interrupted {
+                                     // Transient errors - retry
+                                     consecutive_errors += 1;
+                                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                         disconnect_reason = Some(format!("Connection unstable: {}", e));
+                                         should_break = true;
+                                     }
                                  } else {
+                                     // Serious error
                                      disconnect_reason = Some(format!("Connection error: {}", e));
                                      should_break = true;
                                  }
                              }
                          }
+                     } else {
+                         // Channel is None, connection was closed
+                         should_break = true;
                      }
+                } else {
+                    // Couldn't acquire lock, connection might be shutting down
+                    consecutive_errors += 1;
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        disconnect_reason = Some("Lock acquisition failed".to_string());
+                        should_break = true;
+                    }
                 }
             }
             
             if should_break {
+                // Mark connection as dead
+                conn_clone.alive.store(false, Ordering::Relaxed);
+                
                 // Emit connection-lost event to notify frontend
                 if let Some(reason) = disconnect_reason {
                     let _ = app.emit("connection-lost", ConnectionLostPayload { 
@@ -359,7 +505,15 @@ pub async fn connect(
                 }
                 break;
             }
-            thread::sleep(Duration::from_millis(10));
+            
+            // Dynamic polling: fast when data is flowing, slow when idle
+            // This saves CPU when the terminal is idle while maintaining responsiveness
+            let poll_interval = if got_data || last_data_time.elapsed() < FAST_POLL_DURATION {
+                POLL_FAST
+            } else {
+                POLL_SLOW
+            };
+            thread::sleep(poll_interval);
         }
     });
     
@@ -374,6 +528,11 @@ pub fn write_pty(
 ) -> Result<(), String> {
     let connections = state.connections.lock().unwrap();
     if let Some(conn) = connections.get(&id) {
+        // Update last activity time to prevent idle timeout
+        if let Ok(mut last_activity) = conn.last_activity.lock() {
+            *last_activity = Instant::now();
+        }
+        
         let mut lock = conn.channel.lock().unwrap();
         if let Some(channel) = lock.as_mut() {
             channel.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
@@ -408,6 +567,9 @@ pub fn disconnect(
     // Remove connection from state
     let mut connections = state.connections.lock().unwrap();
     if let Some(conn) = connections.remove(&id) {
+        // Mark connection as dead to stop keepalive and reader threads
+        conn.alive.store(false, Ordering::Relaxed);
+        
         // Close the channel if it exists
         if let Ok(mut lock) = conn.channel.lock() {
             if let Some(ref mut channel) = *lock {

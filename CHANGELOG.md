@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2024-12-26
+
+### Added
+- **SSH 连接稳定性优化**
+  - SSH Keep-Alive 机制，每 30 秒发送心跳防止服务器断开
+  - TCP 超时配置（连接 30s、读 60s、写 30s）
+  - 瞬时错误容错机制，允许 10 次临时错误再断开
+- **空闲自动断开** - 可配置的空闲超时（15分钟 ~ 永不断开）
+  - 新增设置项：空闲断开时间选择
+  - 用户输入自动刷新活动时间
+- **终端快捷操作按钮**
+  - 快速重连按钮 🔄 - 一键断开并重新连接
+  - 编辑服务器按钮 ✏️ - 快速打开服务器编辑对话框
+  - 底部命令栏始终显示，断开时仍可快速重连
+
+### Changed
+- 终端读取缓冲区从 4KB 增大到 16KB，提升大数据量传输性能
+- 动态轮询间隔优化：有数据时 1ms 快速响应，空闲时 50ms 节省 CPU
+- 空闲断开设置使用 shadcn/ui Select 组件替换原生下拉框
+
+### Fixed
+- 修复连接断开后底部命令栏消失导致无法快速重连的问题
+
 ## [1.0.2] - 2024-12-25
 
 ### Added

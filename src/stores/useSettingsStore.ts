@@ -18,15 +18,18 @@ interface BackendSettings {
         file_manager: number;
     };
     theme: string;
+    idle_timeout_minutes: number;
 }
 
 interface SettingsState {
     fonts: FontSettings;
     theme: ThemeMode;
+    idleTimeoutMinutes: number;  // 0 = never disconnect, otherwise minutes
     isLoading: boolean;
     setFontSize: (area: keyof FontSettings, size: number) => void;
     resetFonts: () => void;
     setTheme: (theme: ThemeMode) => void;
+    setIdleTimeout: (minutes: number) => void;
     loadSettings: () => Promise<void>;
 }
 
@@ -62,7 +65,7 @@ if (typeof window !== 'undefined') {
 }
 
 // Helper to save settings to backend
-async function saveToBackend(state: { fonts: FontSettings; theme: ThemeMode }) {
+async function saveToBackend(state: { fonts: FontSettings; theme: ThemeMode; idleTimeoutMinutes: number }) {
     try {
         await invoke('save_settings', {
             settings: {
@@ -73,6 +76,7 @@ async function saveToBackend(state: { fonts: FontSettings; theme: ThemeMode }) {
                     file_manager: state.fonts.fileManager,
                 },
                 theme: state.theme,
+                idle_timeout_minutes: state.idleTimeoutMinutes,
             }
         });
     } catch (error) {
@@ -83,6 +87,7 @@ async function saveToBackend(state: { fonts: FontSettings; theme: ThemeMode }) {
 export const useSettingsStore = create<SettingsState>((set, get) => ({
     fonts: { ...defaultFonts },
     theme: 'dark',
+    idleTimeoutMinutes: 30,  // Default 30 minutes
     isLoading: true,
 
     loadSettings: async () => {
@@ -95,8 +100,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
                 fileManager: settings.fonts.file_manager,
             };
             const theme = settings.theme as ThemeMode;
+            const idleTimeoutMinutes = settings.idle_timeout_minutes ?? 30;
 
-            set({ fonts, theme, isLoading: false });
+            set({ fonts, theme, idleTimeoutMinutes, isLoading: false });
             applyTheme(theme);
         } catch (error) {
             console.error('Failed to load settings:', error);
@@ -108,18 +114,23 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     setFontSize: (area, size) => {
         const newFonts = { ...get().fonts, [area]: Math.min(24, Math.max(10, size)) };
         set({ fonts: newFonts });
-        saveToBackend({ fonts: newFonts, theme: get().theme });
+        saveToBackend({ fonts: newFonts, theme: get().theme, idleTimeoutMinutes: get().idleTimeoutMinutes });
     },
 
     resetFonts: () => {
         set({ fonts: { ...defaultFonts } });
-        saveToBackend({ fonts: { ...defaultFonts }, theme: get().theme });
+        saveToBackend({ fonts: { ...defaultFonts }, theme: get().theme, idleTimeoutMinutes: get().idleTimeoutMinutes });
     },
 
     setTheme: (theme) => {
         applyTheme(theme);
         set({ theme });
-        saveToBackend({ fonts: get().fonts, theme });
+        saveToBackend({ fonts: get().fonts, theme, idleTimeoutMinutes: get().idleTimeoutMinutes });
+    },
+
+    setIdleTimeout: (minutes) => {
+        set({ idleTimeoutMinutes: minutes });
+        saveToBackend({ fonts: get().fonts, theme: get().theme, idleTimeoutMinutes: minutes });
     },
 }));
 
