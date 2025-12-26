@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2024-12-26
+
+### Added
+- **日志查看器 UI** - 设置中新增"查看日志"按钮
+  - 支持选择日志文件（按日期）
+  - 按级别筛选（ERROR/WARN/INFO/DEBUG）
+  - 关键字搜索
+  - 每 5 秒自动刷新
+  - 彩色图标显示日志级别
+  - 统计当前日志的错误和警告数量
+
+### Changed
+- 移除了"打开日志目录"功能，改为内置日志查看器
+
 ## [1.0.4] - 2024-12-26
 
 ### Added

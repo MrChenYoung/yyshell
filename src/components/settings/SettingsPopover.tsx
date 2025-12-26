@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { Settings, Plus, Minus, RotateCcw, Sun, Moon, Monitor, Download, Upload, AlertCircle, CheckCircle, Lock, Eye, EyeOff, Server, Zap, Network, History, Plug, FileCode2, FolderOpen } from "lucide-react";
+import { Settings, Plus, Minus, RotateCcw, Sun, Moon, Monitor, Download, Upload, AlertCircle, CheckCircle, Lock, Eye, EyeOff, Server, Zap, Network, History, Plug, FileCode2, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -132,6 +132,9 @@ function IdleTimeoutControl() {
         </div>
     );
 }
+
+import { LogViewer } from "./LogViewer";
+
 export function SettingsPopover() {
     const { resetFonts, theme, setTheme, fonts, loadSettings } = useSettingsStore();
     const { servers, loadServers } = useServerStore();
@@ -140,6 +143,9 @@ export function SettingsPopover() {
     const { scripts, loadScripts } = useScriptStore();
 
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    // Log viewer state
+    const [logViewerOpen, setLogViewerOpen] = useState(false);
 
     // Backup dialog state
     const [backupDialogOpen, setBackupDialogOpen] = useState(false);
@@ -660,23 +666,14 @@ export function SettingsPopover() {
                                     variant="outline"
                                     size="sm"
                                     className="flex-1 text-xs"
-                                    onClick={async () => {
-                                        try {
-                                            const { invoke } = await import('@tauri-apps/api/core');
-                                            const { openPath } = await import('@tauri-apps/plugin-opener');
-                                            const logDir = await invoke('get_log_directory') as string;
-                                            await openPath(logDir);
-                                        } catch (err) {
-                                            console.error('Failed to open log directory:', err);
-                                        }
-                                    }}
+                                    onClick={() => setLogViewerOpen(true)}
                                 >
-                                    <FolderOpen className="w-3 h-3 mr-1" />
-                                    打开日志目录
+                                    <FileText className="w-3 h-3 mr-1" />
+                                    查看日志
                                 </Button>
                             </div>
                             <p className="text-[10px] text-muted-foreground mt-1.5">
-                                日志按日期分割，保留7天
+                                SSH 连接日志，帮助诊断断开问题
                             </p>
                         </div>
                     </div>
@@ -884,6 +881,9 @@ export function SettingsPopover() {
                     )}
                 </DialogContent>
             </Dialog>
+
+            {/* Log Viewer Dialog */}
+            <LogViewer open={logViewerOpen} onOpenChange={setLogViewerOpen} />
         </>
     );
 }
