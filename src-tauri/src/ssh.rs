@@ -483,7 +483,7 @@ pub async fn connect(
         let mut last_data_time = Instant::now();
         let idle_timeout = Duration::from_secs(300); // 5 minutes idle timeout
         let mut consecutive_errors: u32 = 0;
-        const MAX_CONSECUTIVE_ERRORS: u32 = 10; // Allow some transient errors
+        const MAX_CONSECUTIVE_ERRORS: u32 = 30; // Allow more retries for transient errors (30 * 100ms = 3s tolerance)
         
         // Dynamic polling interval settings
         const POLL_FAST: Duration = Duration::from_millis(1);   // Fast poll when data is flowing
@@ -522,6 +522,8 @@ pub async fn connect(
                                  let _ = app.emit("term-data", Payload { id: id_clone2.clone(), data: buf[..n].to_vec() });
                              }
                              Err(e) => {
+                                 let err_msg = e.to_string();
+                                 
                                  if e.kind() == std::io::ErrorKind::WouldBlock {
                                      // Normal non-blocking behavior, just wait a bit
                                      // Check for idle timeout only if we've been idle too long
@@ -529,18 +531,30 @@ pub async fn connect(
                                          // Still ok, just no data
                                      }
                                  } else if e.kind() == std::io::ErrorKind::TimedOut 
-                                        || e.kind() == std::io::ErrorKind::Interrupted {
+                                        || e.kind() == std::io::ErrorKind::Interrupted 
+                                        || (e.kind() == std::io::ErrorKind::Other && err_msg.contains("transport")) {
                                      // Transient errors - retry
+                                     // "transport read" errors are often temporary network glitches
                                      consecutive_errors += 1;
+                                     
                                      if consecutive_errors == 1 {
-                                         debug!("[SSH:{}] Reader: transient error: {} (count: {})", 
+                                         warn!("[SSH:{}] Reader: transient error: {} (will retry, count: {})", 
+                                                id_clone2, e, consecutive_errors);
+                                     } else if consecutive_errors % 5 == 0 {
+                                         warn!("[SSH:{}] Reader: repeated transient error: {} (count: {})", 
                                                 id_clone2, e, consecutive_errors);
                                      }
+                                     
                                      if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
                                          error!("[SSH:{}] Reader: too many transient errors ({}/{}): {}", 
                                                 id_clone2, consecutive_errors, MAX_CONSECUTIVE_ERRORS, e);
                                          disconnect_reason = Some(format!("Connection unstable: {}", e));
                                          should_break = true;
+                                     } else {
+                                         // Wait a bit longer before retrying for transport errors
+                                         if err_msg.contains("transport") {
+                                             thread::sleep(Duration::from_millis(100));
+                                         }
                                      }
                                  } else {
                                      // Serious error - log with full details
