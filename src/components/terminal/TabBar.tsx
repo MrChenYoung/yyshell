@@ -31,7 +31,7 @@ export function TabBar({ onNewTab }: TabBarProps) {
 
             // Disconnect SSH connection for this specific tab
             try {
-                await invoke("disconnect", { id: connectionId });
+                await invoke("russh_disconnect", { id: connectionId });
             } catch {
                 // Ignore disconnect errors
             }

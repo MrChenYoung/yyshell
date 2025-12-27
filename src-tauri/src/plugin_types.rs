@@ -19,6 +19,9 @@ pub struct PluginManifest {
     /// License (e.g., "MIT")
     #[serde(default)]
     pub license: String,
+    /// Icon path relative to plugin root (e.g., "icon.png")
+    #[serde(default)]
+    pub icon: Option<String>,
     /// GitHub repository URL
     #[serde(default)]
     pub repository: Option<String>,

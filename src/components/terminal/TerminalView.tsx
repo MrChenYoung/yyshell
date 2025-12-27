@@ -13,22 +13,13 @@ import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useServerStore } from "@/stores/useServerStore";
 import { useTabStore } from "@/stores/useTabStore";
 import { useCommandStore } from "@/stores/useCommandStore";
-import { usePluginStore } from "@/stores/usePluginStore";
+import { usePluginStore, PluginInfo } from "@/stores/usePluginStore";
 import {
     Tooltip,
     TooltipContent,
     TooltipProvider,
     TooltipTrigger,
 } from "@/components/ui/tooltip";
-
-// Plugin icon mapping for known plugins
-const PLUGIN_ICONS: Record<string, React.ReactNode> = {
-    'session-manager': (
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z" />
-        </svg>
-    ),
-};
 
 // Props for EnabledPluginButtons
 interface EnabledPluginButtonsProps {
@@ -44,17 +35,20 @@ interface EnabledPluginButtonsProps {
     };
 }
 
-// Component to display enabled plugin buttons
-function EnabledPluginButtons({ serverInfo }: EnabledPluginButtonsProps) {
-    const { plugins } = usePluginStore();
-    const { theme } = useSettingsStore();
+// Single plugin button with icon loading
+function PluginButton({ plugin, serverInfo, theme }: { plugin: PluginInfo; serverInfo?: EnabledPluginButtonsProps['serverInfo']; theme: string }) {
+    const [iconDataUri, setIconDataUri] = useState<string | null>(null);
 
-    // Filter to only show installed and enabled plugins
-    const enabledPlugins = plugins.filter(p => p.enabled);
+    // Fetch icon on mount
+    useEffect(() => {
+        if (plugin.icon) {
+            invoke<string | null>('get_plugin_icon', { pluginId: plugin.id })
+                .then(dataUri => setIconDataUri(dataUri))
+                .catch(() => setIconDataUri(null));
+        }
+    }, [plugin.id, plugin.icon]);
 
-    if (enabledPlugins.length === 0) return null;
-
-    const handlePluginClick = async (plugin: { id: string; name: string }) => {
+    const handlePluginClick = async () => {
         // If we have server info, pass it for auto-connect
         // NOTE: We intentionally do NOT pass password here for security
         // The backend will fetch password from keychain using server ID
@@ -78,24 +72,52 @@ function EnabledPluginButtons({ serverInfo }: EnabledPluginButtonsProps) {
     };
 
     return (
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-1.5 hover:bg-primary/20 hover:text-primary"
+                    onClick={handlePluginClick}
+                >
+                    {iconDataUri ? (
+                        <img
+                            src={iconDataUri}
+                            alt={plugin.name}
+                            className="w-5 h-5 rounded-sm object-cover"
+                        />
+                    ) : (
+                        <Puzzle className="w-4 h-4" />
+                    )}
+                </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-xs">
+                {plugin.name}
+            </TooltipContent>
+        </Tooltip>
+    );
+}
+
+// Component to display enabled plugin buttons
+function EnabledPluginButtons({ serverInfo }: EnabledPluginButtonsProps) {
+    const { plugins } = usePluginStore();
+    const { theme } = useSettingsStore();
+
+    // Filter to only show installed and enabled plugins
+    const enabledPlugins = plugins.filter(p => p.enabled);
+
+    if (enabledPlugins.length === 0) return null;
+
+    return (
         <TooltipProvider delayDuration={300}>
             <div className="flex items-center gap-1 ml-1 pl-2 border-l border-border/50">
                 {enabledPlugins.map(plugin => (
-                    <Tooltip key={plugin.id}>
-                        <TooltipTrigger asChild>
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 px-2 hover:bg-primary/20 hover:text-primary"
-                                onClick={() => handlePluginClick(plugin)}
-                            >
-                                {PLUGIN_ICONS[plugin.id] || <Puzzle className="w-4 h-4" />}
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="top" className="text-xs">
-                            {plugin.name}
-                        </TooltipContent>
-                    </Tooltip>
+                    <PluginButton
+                        key={plugin.id}
+                        plugin={plugin}
+                        serverInfo={serverInfo}
+                        theme={theme}
+                    />
                 ))}
             </div>
         </TooltipProvider>
@@ -208,7 +230,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
         const command = cmd || commandInput;
         if (!command.trim() || !connectedRef.current) return;
 
-        invoke("write_pty", { id: connectionId, data: command + "\n" });
+        invoke("russh_write_pty", { id: connectionId, data: command + "\n" });
 
         // Record command history
         if (serverId) {
@@ -267,7 +289,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
         setConnecting(true);
         try {
             xtermRef.current?.writeln(`\r\n\x1b[1;33m正在连接 ${h}...【${auth === 'Password' ? '密码' : auth === 'Key' ? '密钥' : 'Agent'}认证】\x1b[0m`);
-            await invoke("connect", {
+            await invoke("russh_connect", {
                 id: connectionId,
                 host: h,
                 user: u,
@@ -325,7 +347,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
 
         // First disconnect
         try {
-            await invoke("disconnect", { id: connectionId });
+            await invoke("russh_disconnect", { id: connectionId });
         } catch {
             // Ignore disconnect errors
         }
@@ -385,14 +407,14 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
         // Handle input
         term.onData((data) => {
             if (connectedRef.current) {
-                invoke("write_pty", { id: connectionId, data });
+                invoke("russh_write_pty", { id: connectionId, data });
             }
         });
 
         // Handle resize
         term.onResize((size) => {
             if (connectedRef.current) {
-                invoke("resize_pty", { id: connectionId, rows: size.rows, cols: size.cols });
+                invoke("russh_resize_pty", { id: connectionId, rows: size.rows, cols: size.cols });
             }
         });
 
@@ -483,7 +505,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
                 await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
 
                 try {
-                    await invoke("connect", {
+                    await invoke("russh_connect", {
                         id: connectionId,
                         host: serverInfo.host,
                         user: serverInfo.username,
@@ -542,7 +564,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
 
             try {
                 // Get auth info from serverInfo if available
-                await invoke("connect", {
+                await invoke("russh_connect", {
                     id: connectionId,
                     host: event.payload.host,
                     user: event.payload.username,

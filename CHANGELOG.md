@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.7] - 2024-12-27
+
+### Added
+- **终端区域插件自定义图标** - 插件图标从后端动态加载，显示插件的自定义图标
+- **侧边栏全局插件入口** - 底部工具栏新增已启用插件的快捷按钮
+  - 点击后打开插件全局界面（用户选择服务器）
+  - 与终端区域插件按钮区分：全局模式 vs 针对当前服务器
+
+### Changed
+- 移除硬编码的 `PLUGIN_ICONS` 映射，改为通过 `get_plugin_icon` API 动态加载
+- 插件中心按钮与插件快捷按钮使用竖线分隔，视觉区分更清晰
+
 ## [1.0.6] - 2024-12-27
 
 ### Fixed

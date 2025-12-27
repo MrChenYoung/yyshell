@@ -65,15 +65,45 @@ pub struct DownloadProgressPayload {
 #[tauri::command]
 pub async fn init_sftp(
     state: tauri::State<'_, super::ssh::AppState>,
+    russh_state: tauri::State<'_, super::ssh_russh::RusshAppState>,
     sftp_state: tauri::State<'_, SftpState>,
     id: String,
 ) -> Result<(), String> {
-    // 1. Get credentials from main ssh state
+    // 1. Get credentials - try russh state first, then fallback to ssh2 state
+    log::info!("[SFTP:{}] Looking up credentials", id);
     let creds = {
-        let creds_lock = state.credentials.lock().unwrap();
-        match creds_lock.get(&id) {
-            Some(c) => c.clone(),
-            None => return Err("No credentials found".into()),
+        // First try russh credentials (new implementation)
+        let russh_creds = russh_state.credentials.lock().unwrap();
+        let russh_keys: Vec<_> = russh_creds.keys().collect();
+        log::debug!("[SFTP:{}] Russh credential keys: {:?}", id, russh_keys);
+        
+        if let Some(c) = russh_creds.get(&id) {
+            log::info!("[SFTP:{}] Found credentials in russh state", id);
+            super::ssh::StoredCredentials {
+                host: c.host.clone(),
+                port: c.port,
+                username: c.username.clone(),
+                password: c.password.clone(),
+                auth_type: c.auth_type.clone(),
+                private_key_path: c.private_key_path.clone(),
+            }
+        } else {
+            // Fallback to ssh2 credentials (legacy)
+            log::debug!("[SFTP:{}] Not found in russh, trying ssh2", id);
+            let ssh_creds = state.credentials.lock().unwrap();
+            let ssh_keys: Vec<_> = ssh_creds.keys().collect();
+            log::debug!("[SFTP:{}] ssh2 credential keys: {:?}", id, ssh_keys);
+            
+            match ssh_creds.get(&id) {
+                Some(c) => {
+                    log::info!("[SFTP:{}] Found credentials in ssh2 state", id);
+                    c.clone()
+                },
+                None => {
+                    log::error!("[SFTP:{}] No credentials found in either state", id);
+                    return Err("No credentials found for this connection".into());
+                }
+            }
         }
     };
 

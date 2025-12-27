@@ -301,3 +301,56 @@ pub fn load_plugin_bundle(
         .map_err(|e| format!("Failed to read plugin bundle: {}", e))
 }
 
+/// Get plugin icon as base64 encoded image
+/// Returns the icon data as a data URI (e.g., "data:image/png;base64,...")
+#[tauri::command]
+pub fn get_plugin_icon(
+    state: State<'_, PluginState>,
+    plugin_id: String,
+) -> Result<Option<String>, String> {
+    // Get plugin info to find its path and icon
+    let plugins = state.manager.list_plugins().map_err(|e| e.to_string())?;
+    
+    let plugin = plugins
+        .iter()
+        .find(|p| p.manifest.id == plugin_id)
+        .ok_or_else(|| format!("Plugin '{}' not found", plugin_id))?;
+    
+    // Check if plugin has an icon defined
+    let icon_rel_path = match &plugin.manifest.icon {
+        Some(path) => path.clone(),
+        None => return Ok(None),
+    };
+    
+    // Clean up the path (remove ./ prefix if present)
+    let icon_rel_path = icon_rel_path.trim_start_matches("./").to_string();
+    
+    let plugin_path = std::path::Path::new(&plugin.path);
+    let icon_path = plugin_path.join(&icon_rel_path);
+    
+    if !icon_path.exists() {
+        return Ok(None);
+    }
+    
+    // Read the icon file
+    let icon_data = std::fs::read(&icon_path)
+        .map_err(|e| format!("Failed to read icon: {}", e))?;
+    
+    // Determine MIME type from extension
+    let mime_type = match icon_path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("svg") => "image/svg+xml",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("ico") => "image/x-icon",
+        _ => "image/png", // default
+    };
+    
+    // Encode as base64 data URI
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&icon_data);
+    let data_uri = format!("data:{};base64,{}", mime_type, encoded);
+    
+    Ok(Some(data_uri))
+}

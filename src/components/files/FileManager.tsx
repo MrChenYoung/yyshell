@@ -1393,6 +1393,15 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                                 <File className="w-4 h-4 mr-2" />
                                                                 打开
                                                             </ContextMenuItem>
+                                                            <ContextMenuItem onSelect={() => {
+                                                                const filePath = currentPath === '/'
+                                                                    ? '/' + file.name
+                                                                    : currentPath + '/' + file.name;
+                                                                setEditorFile({ path: filePath, name: file.name });
+                                                            }}>
+                                                                <FileText className="w-4 h-4 mr-2 text-blue-400" />
+                                                                以文本方式打开
+                                                            </ContextMenuItem>
                                                             <ContextMenuSeparator />
                                                             <ContextMenuItem onSelect={() => handleDownloadFile(file)}>
                                                                 <Download className="w-4 h-4 mr-2 text-green-400" />
@@ -1549,10 +1558,10 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                                 {/* File Context Menu - Dynamic based on file type */}
                                                                 {(() => {
                                                                     const fileType = getFileType(file.name);
-                                                                    const menuConfig = {
-                                                                        text: { label: '编辑', icon: <Code className="w-4 h-4 mr-2 text-blue-400" /> },
-                                                                        image: { label: '预览', icon: <Image className="w-4 h-4 mr-2 text-purple-400" /> },
-                                                                        media: { label: '播放', icon: <Film className="w-4 h-4 mr-2 text-pink-400" /> },
+                                                                    const menuConfig: Record<string, { label: string; icon: React.ReactNode }> = {
+                                                                        text: { label: '编辑', icon: <FileText className="w-4 h-4 mr-2 text-blue-400" /> },
+                                                                        image: { label: '预览', icon: <Image className="w-4 h-4 mr-2 text-pink-400" /> },
+                                                                        media: { label: '打开', icon: <Film className="w-4 h-4 mr-2 text-purple-400" /> },
                                                                         unknown: { label: '打开', icon: <File className="w-4 h-4 mr-2 text-gray-400" /> },
                                                                     };
                                                                     const config = menuConfig[fileType];
@@ -1563,6 +1572,15 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                                         </ContextMenuItem>
                                                                     );
                                                                 })()}
+                                                                <ContextMenuItem onSelect={() => {
+                                                                    const filePath = currentPath === '/'
+                                                                        ? '/' + file.name
+                                                                        : currentPath + '/' + file.name;
+                                                                    setEditorFile({ path: filePath, name: file.name });
+                                                                }}>
+                                                                    <FileText className="w-4 h-4 mr-2 text-blue-400" />
+                                                                    以文本方式打开
+                                                                </ContextMenuItem>
                                                                 <ContextMenuSeparator />
                                                                 <ContextMenuItem onSelect={() => handleDownloadFile(file)}>
                                                                     <Download className="w-4 h-4 mr-2 text-green-400" />

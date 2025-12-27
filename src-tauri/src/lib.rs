@@ -1,4 +1,5 @@
 mod ssh;
+mod ssh_russh;  // New russh-based SSH implementation
 mod sftp;
 mod storage;
 mod commands;
@@ -53,11 +54,15 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(ssh::AppState::default())
+        .manage(ssh_russh::RusshAppState::default())  // russh state
         .manage(sftp::SftpState::default())
         .manage(port_forward::PortForwardState::default())
         .manage(plugin_commands::PluginState::default())
         .invoke_handler(tauri::generate_handler![
-            ssh::connect, ssh::disconnect, ssh::write_pty, ssh::resize_pty, ssh::start_monitoring, ssh::ssh_exec_command,
+            // ssh2 commands (only monitoring and exec are still needed)
+            ssh::start_monitoring, ssh::ssh_exec_command,
+            // russh commands (new implementation)
+            ssh_russh::russh_connect, ssh_russh::russh_disconnect, ssh_russh::russh_write_pty, ssh_russh::russh_resize_pty,
             sftp::init_sftp, sftp::sftp_list_dir, sftp::sftp_mkdir, sftp::sftp_create_file,
             sftp::sftp_upload_file, sftp::sftp_copy_file, sftp::sftp_remove_file, sftp::sftp_cancel_upload,
             sftp::sftp_download_file, sftp::sftp_rename, sftp::sftp_rmdir, sftp::sftp_cancel_download, sftp::sftp_download_folder,
@@ -83,7 +88,7 @@ pub fn run() {
             plugin_commands::set_plugin_enabled, plugin_commands::check_plugin_updates,
             plugin_commands::call_plugin_method, plugin_commands::get_plugin_contributions,
             plugin_commands::fetch_marketplace, plugin_commands::install_from_marketplace,
-            plugin_commands::load_plugin_bundle,
+            plugin_commands::load_plugin_bundle, plugin_commands::get_plugin_icon,
             // Plugin window
             plugin_window::open_plugin_window,
             // Logging commands

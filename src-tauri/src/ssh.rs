@@ -1,30 +1,17 @@
+// SSH support module for monitoring and command execution
+// Uses russh for SSH connections (pure Rust, async)
+// This module provides:
+//  - start_monitoring: Collects system stats via a separate SSH connection
+//  - ssh_exec_command: Executes commands on the server (used by SFTP for cp, mv, rm -r)
+
 use std::collections::HashMap;
-use std::net::TcpStream;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
-use std::thread;
-use std::time::{Duration, Instant};
-use std::io::Read;
-use std::io::Write;
-use ssh2::Session;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use russh::*;
 use tauri::{AppHandle, Emitter};
-use log::{info, warn, error, debug};
+use log::{info, error, debug};
 
-// SSH connection configuration constants
-const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-const TCP_READ_TIMEOUT: Duration = Duration::from_secs(60);
-const TCP_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
-const KEEPALIVE_MAX_FAILURES: u32 = 3;
-
-pub struct Connection {
-    pub session: Session,
-    pub channel: Mutex<Option<ssh2::Channel>>,
-    pub alive: AtomicBool,  // Flag to track if connection is still alive
-    pub last_activity: Mutex<Instant>,  // Last user activity time
-    pub idle_timeout_minutes: u32,  // 0 = never timeout
-}
-
-/// Stored credentials for reconnection
+/// Stored credentials for reconnection (also used by other modules)
 #[derive(Clone)]
 pub struct StoredCredentials {
     pub host: String,
@@ -36,29 +23,15 @@ pub struct StoredCredentials {
 }
 
 pub struct AppState {
-    pub connections: Mutex<HashMap<String, Arc<Connection>>>,
     pub credentials: Mutex<HashMap<String, StoredCredentials>>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            connections: Mutex::new(HashMap::new()),
             credentials: Mutex::new(HashMap::new()),
         }
     }
-}
-
-#[derive(Clone, serde::Serialize)]
-struct Payload {
-    id: String,
-    data: Vec<u8>,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct ConnectionLostPayload {
-    id: String,
-    reason: String,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -79,7 +52,6 @@ struct StatsPayload {
 
 /// Parse CPU usage from /proc/stat output
 fn parse_cpu_usage(prev_stats: &Option<(u64, u64)>, output: &str) -> (f32, Option<(u64, u64)>) {
-    // cpu  user nice system idle iowait irq softirq steal guest guest_nice
     for line in output.lines() {
         if line.starts_with("cpu ") {
             let parts: Vec<&str> = line.split_whitespace().collect();
@@ -134,7 +106,6 @@ fn parse_memory_info(output: &str) -> (u64, u64) {
         }
     }
 
-    // If MemAvailable is present (Linux 3.14+), use it; otherwise calculate
     let used = if mem_available > 0 {
         mem_total.saturating_sub(mem_available)
     } else {
@@ -151,7 +122,6 @@ fn parse_network_stats(output: &str) -> (u64, u64) {
 
     for line in output.lines() {
         let line = line.trim();
-        // Skip header lines and loopback
         if line.starts_with("Inter") || line.starts_with("face") || line.starts_with("lo:") {
             continue;
         }
@@ -172,11 +142,9 @@ fn parse_network_stats(output: &str) -> (u64, u64) {
 
 /// Parse disk usage from df output
 fn parse_disk_usage(output: &str) -> (u64, u64) {
-    // df output: Filesystem 1K-blocks Used Available Use% Mounted
     for line in output.lines().skip(1) {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 4 {
-            // Look for root filesystem
             if let Some(mount) = parts.last() {
                 if *mount == "/" {
                     let total: u64 = parts[1].parse().unwrap_or(0);
@@ -205,7 +173,6 @@ fn parse_load_average(output: &str) -> (f32, f32, f32) {
 fn parse_os_release(output: &str) -> String {
     for line in output.lines() {
         if line.starts_with("PRETTY_NAME=") {
-            // Remove PRETTY_NAME= prefix and quotes
             let value = line.trim_start_matches("PRETTY_NAME=").trim_matches('"');
             return value.to_string();
         }
@@ -213,622 +180,244 @@ fn parse_os_release(output: &str) -> String {
     "Unknown".to_string()
 }
 
-#[tauri::command]
-pub async fn connect(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
+/// SSH Client handler for russh monitoring
+struct MonitoringClient {
     id: String,
-    host: String,
-    port: Option<u16>,
-    user: String,
-    password: Option<String>,
-    auth_type: Option<String>,
-    private_key_path: Option<String>,
-    server_id: Option<String>,  // Original server ID for keychain lookup
-    idle_timeout_minutes: Option<u32>,  // Idle timeout in minutes, 0 = never
+}
+
+#[async_trait::async_trait]
+impl client::Handler for MonitoringClient {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        _server_public_key: &russh_keys::PublicKey
+    ) -> Result<bool, Self::Error> {
+        debug!("[SSH-Monitor:{}] Accepting server key", self.id);
+        Ok(true)
+    }
+}
+
+/// Execute a command on a russh channel and return output
+async fn exec_command_on_channel(
+    handle: &mut client::Handle<MonitoringClient>,
+    command: &str,
 ) -> Result<String, String> {
+    let mut channel = handle.channel_open_session()
+        .await
+        .map_err(|e| format!("Failed to open channel: {}", e))?;
     
-    let auth = auth_type.unwrap_or_else(|| "Password".to_string());
-    let ssh_port = port.unwrap_or(22);
-    let idle_timeout = idle_timeout_minutes.unwrap_or(30); // Default 30 minutes
+    channel.exec(true, command)
+        .await
+        .map_err(|e| format!("Failed to exec command: {}", e))?;
     
-    // If password not provided, try to get it from keychain
-    // Use server_id if provided (for plugins), otherwise use connection id
-    let actual_password = if password.is_some() {
-        password.clone()
-    } else {
-        // Use server_id for keychain lookup if provided, otherwise fall back to id
-        let keychain_id = server_id.as_ref().unwrap_or(&id);
-        crate::keychain::get_password(keychain_id)
-    };
-    
-    // Store creds for reconnection (use actual_password for storage)
-    state.credentials.lock().unwrap().insert(id.clone(), StoredCredentials {
-        host: host.clone(),
-        port: ssh_port,
-        username: user.clone(),
-        password: actual_password.clone(),
-        auth_type: auth.clone(),
-        private_key_path: private_key_path.clone(),
-    });
-
-    // Clone values for the blocking task
-    let _id_clone = id.clone();
-    let host_clone = host.clone();
-    let port_clone = ssh_port;
-    let user_clone = user.clone();
-    let password_clone = actual_password.clone();
-    let auth_clone = auth.clone();
-    let key_path_clone = private_key_path.clone();
-    let idle_timeout_clone = idle_timeout;
-
-    info!("[SSH:{}] Initiating connection to {}@{}:{} (auth: {}, idle_timeout: {}min)", 
-          id, user, host, ssh_port, auth, idle_timeout);
-
-    // Run blocking SSH operations in a separate thread pool
-    let (conn, channel) = tokio::task::spawn_blocking(move || -> Result<(Arc<Connection>, ssh2::Channel), String> {
-        // Connect to the SSH server with timeout
-        let addr = format!("{}:{}", host_clone, port_clone);
-        debug!("[SSH] Connecting to TCP {}...", addr);
-        
-        let tcp = TcpStream::connect_timeout(
-            &addr.parse().map_err(|e| {
-                error!("[SSH] Invalid address {}: {}", addr, e);
-                format!("Invalid address: {}", e)
-            })?,
-            TCP_CONNECT_TIMEOUT
-        ).map_err(|e| {
-            error!("[SSH] TCP connection failed to {}: {}", addr, e);
-            format!("Connection timeout: {}", e)
-        })?;
-        
-        info!("[SSH] TCP connection established to {}", addr);
-        
-        // Set TCP read/write timeouts for better stability
-        tcp.set_read_timeout(Some(TCP_READ_TIMEOUT)).ok();
-        tcp.set_write_timeout(Some(TCP_WRITE_TIMEOUT)).ok();
-        
-        // Enable TCP keepalive at socket level
-        tcp.set_nodelay(true).ok();
-        
-        let mut sess = Session::new().unwrap();
-        sess.set_tcp_stream(tcp);
-        
-        debug!("[SSH] Performing SSH handshake...");
-        sess.handshake().map_err(|e| {
-            error!("[SSH] SSH handshake failed: {}", e);
-            e.to_string()
-        })?;
-        info!("[SSH] SSH handshake completed");
-
-        // Auth based on type
-        debug!("[SSH] Authenticating with method: {}", auth_clone);
-        match auth_clone.as_str() {
-            "Key" => {
-                // Private key authentication
-                let key_path = key_path_clone.ok_or("Private key path not provided")?;
-                let key_path = std::path::Path::new(&key_path);
-                debug!("[SSH] Using private key: {:?}", key_path);
-                
-                // Try with password (passphrase) if provided, otherwise without
-                if let Some(passphrase) = &password_clone {
-                    sess.userauth_pubkey_file(&user_clone, None, key_path, Some(passphrase))
-                        .map_err(|e| {
-                            error!("[SSH] Key authentication failed: {}", e);
-                            format!("Key authentication failed: {}", e)
-                        })?;
-                } else {
-                    sess.userauth_pubkey_file(&user_clone, None, key_path, None)
-                        .map_err(|e| {
-                            error!("[SSH] Key authentication failed: {}", e);
-                            format!("Key authentication failed: {}", e)
-                        })?;
-                }
-            },
-            "Agent" => {
-                // SSH Agent authentication
-                sess.userauth_agent(&user_clone)
-                    .map_err(|e| {
-                        error!("[SSH] SSH Agent authentication failed: {}", e);
-                        format!("SSH Agent authentication failed: {}", e)
-                    })?;
-            },
-            _ => {
-                // Password authentication (default)
-                if let Some(pwd) = &password_clone {
-                    sess.userauth_password(&user_clone, pwd)
-                        .map_err(|e| {
-                            error!("[SSH] Password authentication failed: {}", e);
-                            format!("Password authentication failed: {}", e)
-                        })?;
-                } else {
-                    error!("[SSH] Password not provided for password authentication");
-                    return Err("Password not provided for password authentication".into());
-                }
+    let mut output = Vec::new();
+    loop {
+        match channel.wait().await {
+            Some(ChannelMsg::Data { data }) => {
+                output.extend_from_slice(&data);
             }
-        }
-        
-        if !sess.authenticated() {
-            error!("[SSH] Authentication failed - not authenticated after auth attempt");
-            return Err("Authentication failed".into());
-        }
-        info!("[SSH] Authentication successful (method: {})", auth_clone);
-
-        // Configure SSH keepalive to prevent idle disconnection
-        // This sends a keepalive packet every 30 seconds
-        // If the server doesn't respond after 3 keepalives, the connection will be considered dead
-        sess.set_keepalive(true, 30);
-        debug!("[SSH] SSH keepalive configured: interval=30s");
-
-        // Channel
-        debug!("[SSH] Opening session channel...");
-        let mut channel = sess.channel_session().map_err(|e| {
-            error!("[SSH] Failed to open channel: {}", e);
-            e.to_string()
-        })?;
-        channel.request_pty("xterm", None, Some((80, 24, 0, 0))).map_err(|e| {
-            error!("[SSH] Failed to request PTY: {}", e);
-            e.to_string()
-        })?;
-        channel.shell().map_err(|e| {
-            error!("[SSH] Failed to start shell: {}", e);
-            e.to_string()
-        })?;
-        info!("[SSH] PTY channel established");
-        
-        // Set non-blocking for the read loop
-        sess.set_blocking(false);
-
-        let conn = Arc::new(Connection {
-            session: sess,
-            channel: Mutex::new(None), // We'll set this after
-            alive: AtomicBool::new(true),  // Initialize as alive
-            last_activity: Mutex::new(Instant::now()),  // Initialize with current time
-            idle_timeout_minutes: idle_timeout_clone,
-        });
-
-        Ok((conn, channel))
-    }).await.map_err(|e| e.to_string())??;
-
-    // Set the channel
-    *conn.channel.lock().unwrap() = Some(channel);
-
-    state.connections.lock().unwrap().insert(id.clone(), conn.clone());
-    
-    info!("[SSH:{}] Connection established successfully", id);
-    
-    // Spawn keepalive thread to monitor connection health
-    // Note: SSH keepalive is configured via sess.set_keepalive() above
-    // This thread monitors the connection state and idle timeout
-    let conn_keepalive = conn.clone();
-    let id_keepalive = id.clone();
-    let app_keepalive = app.clone();
-    thread::spawn(move || {
-        let mut failures: u32 = 0;
-        debug!("[SSH:{}] Keepalive thread started", id_keepalive);
-        
-        loop {
-            thread::sleep(KEEPALIVE_INTERVAL);
-            
-            // Check if connection is still marked as alive
-            if !conn_keepalive.alive.load(Ordering::Relaxed) {
-                debug!("[SSH:{}] Keepalive: connection marked as dead, exiting", id_keepalive);
+            Some(ChannelMsg::ExtendedData { data, ext: _ }) => {
+                output.extend_from_slice(&data);
+            }
+            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
                 break;
             }
-            
-            // Check for idle timeout (0 = never timeout)
-            if conn_keepalive.idle_timeout_minutes > 0 {
-                if let Ok(last_activity) = conn_keepalive.last_activity.lock() {
-                    let idle_duration = last_activity.elapsed();
-                    let timeout_duration = Duration::from_secs(conn_keepalive.idle_timeout_minutes as u64 * 60);
-                    
-                    if idle_duration > timeout_duration {
-                        // User has been idle too long, disconnect
-                        conn_keepalive.alive.store(false, Ordering::Relaxed);
-                        let idle_mins = idle_duration.as_secs() / 60;
-                        warn!("[SSH:{}] Idle timeout reached: {}min idle, timeout={}min", 
-                              id_keepalive, idle_mins, conn_keepalive.idle_timeout_minutes);
-                        let _ = app_keepalive.emit("connection-lost", ConnectionLostPayload {
-                            id: id_keepalive.clone(),
-                            reason: format!("空闲超时 ({}分钟无操作)", idle_mins),
-                        });
-                        break;
-                    }
-                }
-            }
-            
-            // Check channel health
-            let is_healthy = if let Ok(lock) = conn_keepalive.channel.lock() {
-                if let Some(ref channel) = *lock {
-                    // Check if channel has received EOF (connection closed)
-                    !channel.eof()
-                } else {
-                    false // Channel was removed
-                }
-            } else {
-                false // Couldn't acquire lock
-            };
-            
-            if is_healthy {
-                failures = 0;
-            } else {
-                failures += 1;
-                warn!("[SSH:{}] Keepalive: channel unhealthy, failure count: {}/{}", 
-                      id_keepalive, failures, KEEPALIVE_MAX_FAILURES);
-            }
-            
-            if failures >= KEEPALIVE_MAX_FAILURES {
-                // Connection appears dead, notify frontend
-                conn_keepalive.alive.store(false, Ordering::Relaxed);
-                error!("[SSH:{}] Connection health check failed after {} attempts", 
-                       id_keepalive, failures);
-                let _ = app_keepalive.emit("connection-lost", ConnectionLostPayload {
-                    id: id_keepalive.clone(),
-                    reason: "Connection health check failed".to_string(),
-                });
-                break;
-            }
-        }
-        debug!("[SSH:{}] Keepalive thread exited", id_keepalive);
-    });
-    
-    // Spawn reader thread
-    let conn_clone = conn.clone();
-    let id_clone2 = id.clone();
-    
-    thread::spawn(move || {
-        // Increased buffer size to 16KB for better throughput
-        let mut buf = [0u8; 16384];
-        let mut last_activity = Instant::now();
-        let mut last_data_time = Instant::now();
-        let idle_timeout = Duration::from_secs(300); // 5 minutes idle timeout
-        let mut consecutive_errors: u32 = 0;
-        const MAX_CONSECUTIVE_ERRORS: u32 = 30; // Allow more retries for transient errors (30 * 100ms = 3s tolerance)
-        
-        // Dynamic polling interval settings
-        const POLL_FAST: Duration = Duration::from_millis(1);   // Fast poll when data is flowing
-        const POLL_SLOW: Duration = Duration::from_millis(50);  // Slow poll when idle (saves CPU)
-        const FAST_POLL_DURATION: Duration = Duration::from_millis(100); // Stay fast for 100ms after data
-        
-        debug!("[SSH:{}] Reader thread started", id_clone2);
-        
-        loop {
-            // Check if connection was marked as dead by keepalive thread
-            if !conn_clone.alive.load(Ordering::Relaxed) {
-                debug!("[SSH:{}] Reader: connection marked as dead, exiting", id_clone2);
-                break;
-            }
-            
-            // Scope for lock
-            let mut should_break = false;
-            let mut disconnect_reason: Option<String> = None;
-            let mut got_data = false;
-            {
-                if let Ok(mut lock) = conn_clone.channel.lock() {
-                     if let Some(channel) = lock.as_mut() {
-                         match channel.read(&mut buf) {
-                             Ok(0) => {
-                                 // EOF - connection closed gracefully
-                                 warn!("[SSH:{}] Reader: EOF received, connection closed by remote", id_clone2);
-                                 disconnect_reason = Some("Connection closed by remote host".to_string());
-                                 should_break = true;
-                             }
-                             Ok(n) => {
-                                 // Reset error counter on successful read
-                                 consecutive_errors = 0;
-                                 last_activity = Instant::now();
-                                 last_data_time = Instant::now();
-                                 got_data = true;
-                                 let _ = app.emit("term-data", Payload { id: id_clone2.clone(), data: buf[..n].to_vec() });
-                             }
-                             Err(e) => {
-                                 let err_msg = e.to_string();
-                                 
-                                 if e.kind() == std::io::ErrorKind::WouldBlock {
-                                     // Normal non-blocking behavior, just wait a bit
-                                     // Check for idle timeout only if we've been idle too long
-                                     if last_activity.elapsed() > idle_timeout {
-                                         // Still ok, just no data
-                                     }
-                                 } else if e.kind() == std::io::ErrorKind::TimedOut 
-                                        || e.kind() == std::io::ErrorKind::Interrupted 
-                                        || (e.kind() == std::io::ErrorKind::Other && err_msg.contains("transport")) {
-                                     // Transient errors - retry
-                                     // "transport read" errors are often temporary network glitches
-                                     consecutive_errors += 1;
-                                     
-                                     if consecutive_errors == 1 {
-                                         warn!("[SSH:{}] Reader: transient error: {} (will retry, count: {})", 
-                                                id_clone2, e, consecutive_errors);
-                                     } else if consecutive_errors % 5 == 0 {
-                                         warn!("[SSH:{}] Reader: repeated transient error: {} (count: {})", 
-                                                id_clone2, e, consecutive_errors);
-                                     }
-                                     
-                                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                                         error!("[SSH:{}] Reader: too many transient errors ({}/{}): {}", 
-                                                id_clone2, consecutive_errors, MAX_CONSECUTIVE_ERRORS, e);
-                                         disconnect_reason = Some(format!("Connection unstable: {}", e));
-                                         should_break = true;
-                                     } else {
-                                         // Wait a bit longer before retrying for transport errors
-                                         if err_msg.contains("transport") {
-                                             thread::sleep(Duration::from_millis(100));
-                                         }
-                                     }
-                                 } else {
-                                     // Serious error - log with full details
-                                     error!("[SSH:{}] Reader: connection error: {} (kind: {:?})", 
-                                            id_clone2, e, e.kind());
-                                     disconnect_reason = Some(format!("Connection error: {}", e));
-                                     should_break = true;
-                                 }
-                             }
-                         }
-                     } else {
-                         // Channel is None, connection was closed
-                         warn!("[SSH:{}] Reader: channel is None, connection closed", id_clone2);
-                         should_break = true;
-                     }
-                } else {
-                    // Couldn't acquire lock, connection might be shutting down
-                    consecutive_errors += 1;
-                    warn!("[SSH:{}] Reader: lock acquisition failed (count: {})", 
-                          id_clone2, consecutive_errors);
-                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                        error!("[SSH:{}] Reader: lock acquisition failed too many times", id_clone2);
-                        disconnect_reason = Some("Lock acquisition failed".to_string());
-                        should_break = true;
-                    }
-                }
-            }
-            
-            if should_break {
-                // Mark connection as dead
-                conn_clone.alive.store(false, Ordering::Relaxed);
-                
-                // Emit connection-lost event to notify frontend
-                if let Some(ref reason) = disconnect_reason {
-                    error!("[SSH:{}] Disconnecting: {}", id_clone2, reason);
-                    let _ = app.emit("connection-lost", ConnectionLostPayload { 
-                        id: id_clone2.clone(), 
-                        reason: reason.clone()
-                    });
-                }
-                break;
-            }
-            
-            // Dynamic polling: fast when data is flowing, slow when idle
-            // This saves CPU when the terminal is idle while maintaining responsiveness
-            let poll_interval = if got_data || last_data_time.elapsed() < FAST_POLL_DURATION {
-                POLL_FAST
-            } else {
-                POLL_SLOW
-            };
-            thread::sleep(poll_interval);
-        }
-        debug!("[SSH:{}] Reader thread exited", id_clone2);
-    });
-    
-    Ok("Connected".into())
-}
-
-#[tauri::command]
-pub fn write_pty(
-    state: tauri::State<'_, AppState>,
-    id: String,
-    data: String,
-) -> Result<(), String> {
-    let connections = state.connections.lock().unwrap();
-    if let Some(conn) = connections.get(&id) {
-        // Update last activity time to prevent idle timeout
-        if let Ok(mut last_activity) = conn.last_activity.lock() {
-            *last_activity = Instant::now();
-        }
-        
-        let mut lock = conn.channel.lock().unwrap();
-        if let Some(channel) = lock.as_mut() {
-            channel.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
-            channel.flush().map_err(|e| e.to_string())?;
+            _ => {}
         }
     }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn resize_pty(
-    state: tauri::State<'_, AppState>,
-    id: String,
-    rows: u32,
-    cols: u32,
-) -> Result<(), String> {
-    let connections = state.connections.lock().unwrap();
-    if let Some(conn) = connections.get(&id) {
-         let mut lock = conn.channel.lock().unwrap();
-         if let Some(channel) = lock.as_mut() {
-             channel.request_pty_size(cols, rows, None, None).map_err(|e| e.to_string())?;
-         }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn disconnect(
-    state: tauri::State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
-    info!("[SSH:{}] Disconnect requested", id);
     
-    // Remove connection from state
-    let mut connections = state.connections.lock().unwrap();
-    if let Some(conn) = connections.remove(&id) {
-        // Mark connection as dead to stop keepalive and reader threads
-        conn.alive.store(false, Ordering::Relaxed);
-        
-        // Close the channel if it exists
-        if let Ok(mut lock) = conn.channel.lock() {
-            if let Some(ref mut channel) = *lock {
-                let _ = channel.send_eof();
-                let _ = channel.wait_close();
+    String::from_utf8(output).map_err(|e| format!("Invalid UTF-8 output: {}", e))
+}
+
+/// Authenticate with russh based on auth type
+async fn authenticate_russh(
+    handle: &mut client::Handle<MonitoringClient>,
+    creds: &StoredCredentials,
+) -> Result<bool, String> {
+    match creds.auth_type.as_str() {
+        "Key" => {
+            if let Some(ref key_path) = creds.private_key_path {
+                let key = russh_keys::load_secret_key(key_path, creds.password.as_deref())
+                    .map_err(|e| format!("Failed to load private key: {}", e))?;
+                handle.authenticate_publickey(&creds.username, Arc::new(key))
+                    .await
+                    .map_err(|e| format!("Key auth failed: {}", e))
+            } else {
+                Err("Private key path not provided".into())
             }
-            *lock = None;
         }
-        info!("[SSH:{}] Connection closed", id);
-    } else {
-        debug!("[SSH:{}] No connection found to disconnect", id);
+        "Agent" => {
+            Err("SSH Agent authentication not yet implemented in russh".into())
+        }
+        _ => {
+            // Password authentication
+            if let Some(ref pwd) = creds.password {
+                handle.authenticate_password(&creds.username, pwd)
+                    .await
+                    .map_err(|e| format!("Password auth failed: {}", e))
+            } else {
+                Err("Password not provided".into())
+            }
+        }
     }
-    Ok(())
 }
 
 #[tauri::command]
 pub async fn start_monitoring(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
+    russh_state: tauri::State<'_, super::ssh_russh::RusshAppState>,
     id: String,
 ) -> Result<(), String> {
+    // Get credentials from russh state first, then fallback to legacy state
     let creds = {
-        let creds_lock = state.credentials.lock().unwrap();
-        match creds_lock.get(&id) {
-            Some(c) => c.clone(),
-            None => return Err("No credentials found".into()),
+        let russh_creds = russh_state.credentials.lock().unwrap();
+        if let Some(c) = russh_creds.get(&id) {
+            StoredCredentials {
+                host: c.host.clone(),
+                port: c.port,
+                username: c.username.clone(),
+                password: c.password.clone(),
+                auth_type: c.auth_type.clone(),
+                private_key_path: c.private_key_path.clone(),
+            }
+        } else {
+            let creds_lock = state.credentials.lock().unwrap();
+            match creds_lock.get(&id) {
+                Some(c) => c.clone(),
+                None => return Err("No credentials found".into()),
+            }
         }
     };
 
-    thread::spawn(move || {
-        // New connection for monitoring
-        if let Ok(tcp) = TcpStream::connect(format!("{}:{}", creds.host, creds.port)) {
-            if let Ok(mut sess) = Session::new() {
-                sess.set_tcp_stream(tcp);
-                if sess.handshake().is_ok() {
-                    // Auth based on type
-                    let auth_res = match creds.auth_type.as_str() {
-                        "Key" => {
-                            if let Some(ref key_path) = creds.private_key_path {
-                                let path = std::path::Path::new(key_path);
-                                sess.userauth_pubkey_file(&creds.username, None, path, creds.password.as_deref())
-                            } else {
-                                Err(ssh2::Error::from_errno(ssh2::ErrorCode::Session(-1)))
-                            }
-                        },
-                        "Agent" => sess.userauth_agent(&creds.username),
-                        _ => {
-                            if let Some(ref pwd) = creds.password {
-                                sess.userauth_password(&creds.username, pwd)
-                            } else {
-                                Err(ssh2::Error::from_errno(ssh2::ErrorCode::Session(-1)))
-                            }
-                        }
-                    };
-
-                    if auth_res.is_ok() && sess.authenticated() {
-                        let mut prev_cpu_stats: Option<(u64, u64)> = None;
-                        let mut prev_net_stats: Option<(u64, u64)> = None;
-                        
-                        // Get OS info once at start
-                        let os_name = {
-                            let mut os_channel = match sess.channel_session() {
-                                Ok(c) => c,
-                                Err(_) => return,
-                            };
-                            if os_channel.exec("cat /etc/os-release 2>/dev/null || echo 'PRETTY_NAME=\"Unknown\"'").is_ok() {
-                                let mut os_output = String::new();
-                                let _ = os_channel.read_to_string(&mut os_output);
-                                let _ = os_channel.wait_close();
-                                parse_os_release(&os_output)
-                            } else {
-                                "Unknown".to_string()
-                            }
-                        };
-
-                        loop {
-                            // Collect all stats in one command for efficiency
-                            let stat_cmd = "cat /proc/stat; echo '---MEMINFO---'; cat /proc/meminfo; echo '---NETDEV---'; cat /proc/net/dev; echo '---DISK---'; df -k /; echo '---LOADAVG---'; cat /proc/loadavg";
-                            
-                            let mut channel = match sess.channel_session() {
-                                Ok(c) => c,
-                                Err(_) => break,
-                            };
-
-                            if channel.exec(stat_cmd).is_ok() {
-                                let mut output = String::new();
-                                let _ = channel.read_to_string(&mut output);
-                                let _ = channel.wait_close();
-
-                                // Split by markers
-                                let sections: Vec<&str> = output.split("---").collect();
-                                
-                                let mut cpu_output = "";
-                                let mut mem_output = "";
-                                let mut net_output = "";
-                                let mut disk_output = "";
-                                let mut load_output = "";
-
-                                for (i, section) in sections.iter().enumerate() {
-                                    if i == 0 {
-                                        cpu_output = section;
-                                    } else if section.starts_with("MEMINFO") {
-                                        if let Some(next) = sections.get(i + 1) {
-                                            mem_output = next.trim_start_matches("---");
-                                        }
-                                    } else if section.starts_with("NETDEV") {
-                                        if let Some(next) = sections.get(i + 1) {
-                                            net_output = next.trim_start_matches("---");
-                                        }
-                                    } else if section.starts_with("DISK") {
-                                        if let Some(next) = sections.get(i + 1) {
-                                            disk_output = next.trim_start_matches("---");
-                                        }
-                                    } else if section.starts_with("LOADAVG") {
-                                        if let Some(next) = sections.get(i + 1) {
-                                            load_output = next.trim_start_matches("---");
-                                        }
-                                    }
-                                }
-
-                                // Parse CPU
-                                let (cpu_percent, new_cpu_stats) = parse_cpu_usage(&prev_cpu_stats, cpu_output);
-                                prev_cpu_stats = new_cpu_stats;
-
-                                // Parse Memory (values in KB)
-                                let (ram_total, ram_used) = parse_memory_info(mem_output);
-
-                                // Parse Network
-                                let (net_rx, net_tx) = parse_network_stats(net_output);
-                                
-                                // Calculate network rate (bytes since last poll)
-                                let (net_rx_rate, net_tx_rate) = if let Some((prev_rx, prev_tx)) = prev_net_stats {
-                                    (net_rx.saturating_sub(prev_rx), net_tx.saturating_sub(prev_tx))
-                                } else {
-                                    (0, 0)
-                                };
-                                prev_net_stats = Some((net_rx, net_tx));
-
-                                // Parse Disk (values in KB)
-                                let (disk_total, disk_used) = parse_disk_usage(disk_output);
-
-                                // Parse Load Average
-                                let (load_1, load_5, load_15) = parse_load_average(load_output);
-
-                                let _ = app.emit("stats-data", StatsPayload {
-                                    id: id.clone(),
-                                    cpu: cpu_percent,
-                                    ram_total,
-                                    ram_used,
-                                    net_rx: net_rx_rate,
-                                    net_tx: net_tx_rate,
-                                    disk_total,
-                                    disk_used,
-                                    load_1,
-                                    load_5,
-                                    load_15,
-                                    os_name: os_name.clone(),
-                                });
-                            }
-                            thread::sleep(Duration::from_secs(2));
-                        }
-                    }
+    let id_clone = id.clone();
+    
+    // Spawn async monitoring task
+    tokio::spawn(async move {
+        info!("[SSH-Monitor:{}] Starting monitoring for {}:{}", id_clone, creds.host, creds.port);
+        
+        // Build russh config
+        let config = Arc::new(client::Config {
+            inactivity_timeout: Some(Duration::from_secs(60)),
+            keepalive_interval: Some(Duration::from_secs(15)),
+            keepalive_max: 4,
+            ..Default::default()
+        });
+        
+        let client = MonitoringClient { id: id_clone.clone() };
+        let addr = format!("{}:{}", creds.host, creds.port);
+        
+        // Connect with timeout
+        let handle_result = tokio::time::timeout(
+            Duration::from_secs(30),
+            client::connect(config, addr.clone(), client)
+        ).await;
+        
+        let mut handle = match handle_result {
+            Ok(Ok(h)) => h,
+            Ok(Err(e)) => {
+                error!("[SSH-Monitor:{}] Connection failed: {}", id_clone, e);
+                return;
+            }
+            Err(_) => {
+                error!("[SSH-Monitor:{}] Connection timeout", id_clone);
+                return;
+            }
+        };
+        
+        info!("[SSH-Monitor:{}] Connected, authenticating...", id_clone);
+        
+        // Authenticate
+        match authenticate_russh(&mut handle, &creds).await {
+            Ok(true) => {
+                info!("[SSH-Monitor:{}] Authentication successful", id_clone);
+            }
+            Ok(false) => {
+                error!("[SSH-Monitor:{}] Authentication rejected", id_clone);
+                return;
+            }
+            Err(e) => {
+                error!("[SSH-Monitor:{}] Authentication failed: {}", id_clone, e);
+                return;
+            }
+        }
+        
+        // Monitoring loop
+        let mut prev_cpu_stats: Option<(u64, u64)> = None;
+        let mut prev_net_stats: Option<(u64, u64)> = None;
+        let mut os_name = String::new();
+        
+        loop {
+            // Get OS name once
+            if os_name.is_empty() {
+                if let Ok(output) = exec_command_on_channel(&mut handle, "cat /etc/os-release").await {
+                    os_name = parse_os_release(&output);
                 }
             }
+            
+            // Get CPU stats
+            let cpu_percent = if let Ok(output) = exec_command_on_channel(&mut handle, "cat /proc/stat").await {
+                let (cpu, new_stats) = parse_cpu_usage(&prev_cpu_stats, &output);
+                prev_cpu_stats = new_stats;
+                cpu
+            } else {
+                0.0
+            };
+            
+            // Get memory stats
+            let (ram_total, ram_used) = if let Ok(output) = exec_command_on_channel(&mut handle, "cat /proc/meminfo").await {
+                parse_memory_info(&output)
+            } else {
+                (0, 0)
+            };
+            
+            // Get network stats
+            let (net_rx_rate, net_tx_rate) = if let Ok(output) = exec_command_on_channel(&mut handle, "cat /proc/net/dev").await {
+                let (rx, tx) = parse_network_stats(&output);
+                if let Some((prev_rx, prev_tx)) = prev_net_stats {
+                    prev_net_stats = Some((rx, tx));
+                    (rx.saturating_sub(prev_rx) / 2, tx.saturating_sub(prev_tx) / 2) // Rate per second (2s interval)
+                } else {
+                    prev_net_stats = Some((rx, tx));
+                    (0, 0)
+                }
+            } else {
+                (0, 0)
+            };
+            
+            // Get disk stats
+            let (disk_total, disk_used) = if let Ok(output) = exec_command_on_channel(&mut handle, "df -k /").await {
+                parse_disk_usage(&output)
+            } else {
+                (0, 0)
+            };
+            
+            // Get load average
+            let (load_1, load_5, load_15) = if let Ok(output) = exec_command_on_channel(&mut handle, "cat /proc/loadavg").await {
+                parse_load_average(&output)
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            
+            // Emit stats
+            let _ = app.emit("stats-data", StatsPayload {
+                id: id_clone.clone(),
+                cpu: cpu_percent,
+                ram_total,
+                ram_used,
+                net_rx: net_rx_rate,
+                net_tx: net_tx_rate,
+                disk_total,
+                disk_used,
+                load_1,
+                load_5,
+                load_15,
+                os_name: os_name.clone(),
+            });
+            
+            // Wait 2 seconds before next collection
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
     });
 
@@ -840,70 +429,61 @@ pub async fn start_monitoring(
 #[tauri::command]
 pub async fn ssh_exec_command(
     state: tauri::State<'_, AppState>,
+    russh_state: tauri::State<'_, super::ssh_russh::RusshAppState>,
     id: String,
     command: String,
 ) -> Result<String, String> {
-    // Get credentials to create a new exec channel
+    // Get credentials
     let creds = {
-        let creds_lock = state.credentials.lock().unwrap();
-        match creds_lock.get(&id) {
-            Some(c) => c.clone(),
-            None => return Err("No credentials found".into()),
+        let russh_creds = russh_state.credentials.lock().unwrap();
+        if let Some(c) = russh_creds.get(&id) {
+            StoredCredentials {
+                host: c.host.clone(),
+                port: c.port,
+                username: c.username.clone(),
+                password: c.password.clone(),
+                auth_type: c.auth_type.clone(),
+                private_key_path: c.private_key_path.clone(),
+            }
+        } else {
+            let creds_lock = state.credentials.lock().unwrap();
+            match creds_lock.get(&id) {
+                Some(c) => c.clone(),
+                None => return Err("No credentials found".into()),
+            }
         }
     };
 
-    // Execute in blocking task
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        // New connection for exec
-        let tcp = TcpStream::connect(format!("{}:{}", creds.host, creds.port)).map_err(|e| e.to_string())?;
-        let mut sess = Session::new().map_err(|e| e.to_string())?;
-        sess.set_tcp_stream(tcp);
-        sess.handshake().map_err(|e| e.to_string())?;
-
-        // Auth based on type
-        match creds.auth_type.as_str() {
-            "Key" => {
-                let key_path = creds.private_key_path.as_ref().ok_or("Private key path not provided")?;
-                let path = std::path::Path::new(key_path);
-                sess.userauth_pubkey_file(&creds.username, None, path, creds.password.as_deref())
-                    .map_err(|e| format!("Key authentication failed: {}", e))?;
-            },
-            "Agent" => {
-                sess.userauth_agent(&creds.username)
-                    .map_err(|e| format!("SSH Agent authentication failed: {}", e))?;
-            },
-            _ => {
-                let pwd = creds.password.as_ref().ok_or("Password not provided")?;
-                sess.userauth_password(&creds.username, pwd)
-                    .map_err(|e| format!("Password authentication failed: {}", e))?;
-            }
-        }
-
-        if !sess.authenticated() {
-            return Err("Authentication failed".into());
-        }
-
-        // Execute command
-        let mut channel = sess.channel_session().map_err(|e| e.to_string())?;
-        channel.exec(&command).map_err(|e| e.to_string())?;
-
-        let mut output = String::new();
-        channel.read_to_string(&mut output).map_err(|e| e.to_string())?;
-        
-        // Get exit status
-        channel.wait_close().map_err(|e| e.to_string())?;
-        let exit_status = channel.exit_status().unwrap_or(-1);
-        
-        if exit_status != 0 {
-            // Read stderr for error message
-            let mut stderr = String::new();
-            let _ = channel.stderr().read_to_string(&mut stderr);
-            if !stderr.is_empty() {
-                return Err(stderr);
-            }
-            return Err(format!("Command failed with exit code {}", exit_status));
-        }
-
-        Ok(output)
-    }).await.map_err(|e| e.to_string())?
+    debug!("[SSH-Exec:{}] Executing command: {}", id, command);
+    
+    // Build russh config
+    let config = Arc::new(client::Config {
+        inactivity_timeout: Some(Duration::from_secs(60)),
+        ..Default::default()
+    });
+    
+    let client = MonitoringClient { id: id.clone() };
+    let addr = format!("{}:{}", creds.host, creds.port);
+    
+    // Connect with timeout
+    let mut handle = tokio::time::timeout(
+        Duration::from_secs(30),
+        client::connect(config, addr.clone(), client)
+    )
+    .await
+    .map_err(|_| "Connection timeout".to_string())?
+    .map_err(|e| format!("Connection failed: {}", e))?;
+    
+    // Authenticate
+    let authenticated = authenticate_russh(&mut handle, &creds).await?;
+    if !authenticated {
+        return Err("Authentication rejected".into());
+    }
+    
+    // Execute command
+    let output = exec_command_on_channel(&mut handle, &command).await?;
+    
+    debug!("[SSH-Exec:{}] Command completed, output length: {}", id, output.len());
+    
+    Ok(output)
 }

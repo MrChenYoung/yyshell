@@ -4,8 +4,9 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::thread;
 use std::time::Duration;
-use ssh2::Session;
+use russh::*;
 use tauri::{AppHandle, Emitter};
+use log::{info, warn, error, debug};
 
 /// Active port forward state
 pub struct ActiveForward {
@@ -39,11 +40,27 @@ impl Default for PortForwardState {
     }
 }
 
+/// SSH client handler for port forwarding
+struct TunnelClient;
+
+#[async_trait::async_trait]
+impl client::Handler for TunnelClient {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        _server_public_key: &russh_keys::PublicKey
+    ) -> Result<bool, Self::Error> {
+        Ok(true)
+    }
+}
+
 /// Start a local port forward
 #[tauri::command]
 pub fn start_port_forward(
     app: AppHandle,
     ssh_state: tauri::State<'_, crate::ssh::AppState>,
+    russh_state: tauri::State<'_, crate::ssh_russh::RusshAppState>,
     pf_state: tauri::State<'_, PortForwardState>,
     connection_id: String,
     forward_id: String,
@@ -59,11 +76,23 @@ pub fn start_port_forward(
         }
     }
 
-    // Get the SSH session credentials to create new sessions for each tunnel
+    // Get credentials - try russh first, then ssh2
     let credentials = {
-        let creds = ssh_state.credentials.lock().unwrap();
-        creds.get(&connection_id).cloned()
-            .ok_or("No active connection found for this ID")?
+        let russh_creds = russh_state.credentials.lock().unwrap();
+        if let Some(c) = russh_creds.get(&connection_id) {
+            crate::ssh::StoredCredentials {
+                host: c.host.clone(),
+                port: c.port,
+                username: c.username.clone(),
+                password: c.password.clone(),
+                auth_type: c.auth_type.clone(),
+                private_key_path: c.private_key_path.clone(),
+            }
+        } else {
+            let creds = ssh_state.credentials.lock().unwrap();
+            creds.get(&connection_id).cloned()
+                .ok_or("No active connection found for this ID")?
+        }
     };
 
     let running = Arc::new(AtomicBool::new(true));
@@ -98,6 +127,8 @@ pub fn start_port_forward(
             message: format!("Listening on 127.0.0.1:{}", local_port),
         });
 
+        info!("[PortForward:{}] Started on 127.0.0.1:{}", forward_id_clone, local_port);
+
         while running_clone.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((client_stream, addr)) => {
@@ -108,30 +139,42 @@ pub fn start_port_forward(
                         message: format!("New connection from {}", addr),
                     });
 
-                    // Create a new SSH session for this tunnel connection
+                    debug!("[PortForward:{}] New connection from {}", forward_id_clone, addr);
+
                     let creds = credentials.clone();
                     let remote_host = remote_host_clone.clone();
                     let remote_port = remote_port;
                     let running = running_clone.clone();
 
+                    // Handle tunnel in a new thread with tokio runtime
                     thread::spawn(move || {
-                        if let Err(e) = handle_tunnel_connection(
-                            client_stream,
-                            &creds,
-                            &remote_host,
-                            remote_port,
-                            running,
-                        ) {
-                            eprintln!("Tunnel error: {}", e);
-                        }
+                        // Create a new tokio runtime for this tunnel
+                        let rt = match tokio::runtime::Runtime::new() {
+                            Ok(rt) => rt,
+                            Err(e) => {
+                                error!("Failed to create tokio runtime: {}", e);
+                                return;
+                            }
+                        };
+                        
+                        rt.block_on(async {
+                            if let Err(e) = handle_tunnel_connection(
+                                client_stream,
+                                &creds,
+                                &remote_host,
+                                remote_port,
+                                running,
+                            ).await {
+                                warn!("Tunnel error: {}", e);
+                            }
+                        });
                     });
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    // No connection, sleep briefly
                     thread::sleep(Duration::from_millis(100));
                 }
                 Err(e) => {
-                    eprintln!("Accept error: {}", e);
+                    error!("[PortForward] Accept error: {}", e);
                     break;
                 }
             }
@@ -161,99 +204,136 @@ pub fn start_port_forward(
     Ok(format!("Port forward started on 127.0.0.1:{}", local_port))
 }
 
-/// Handle a single tunnel connection
-fn handle_tunnel_connection(
+/// Handle a single tunnel connection using russh
+async fn handle_tunnel_connection(
     mut client: TcpStream,
     creds: &crate::ssh::StoredCredentials,
     remote_host: &str,
     remote_port: u16,
     running: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    // Create new SSH session for this tunnel
-    let tcp = TcpStream::connect(format!("{}:{}", creds.host, creds.port))
-        .map_err(|e| format!("Failed to connect to SSH server: {}", e))?;
-    tcp.set_read_timeout(Some(Duration::from_secs(30))).ok();
+    // Build russh config
+    let config = Arc::new(client::Config {
+        inactivity_timeout: Some(Duration::from_secs(120)),
+        keepalive_interval: Some(Duration::from_secs(15)),
+        keepalive_max: 4,
+        ..Default::default()
+    });
     
-    let mut session = Session::new()
-        .map_err(|e| format!("Failed to create session: {}", e))?;
-    session.set_tcp_stream(tcp);
-    session.handshake()
-        .map_err(|e| format!("SSH handshake failed: {}", e))?;
-
+    // Connect to SSH server
+    let addr = format!("{}:{}", creds.host, creds.port);
+    let mut handle = tokio::time::timeout(
+        Duration::from_secs(30),
+        client::connect(config, addr.clone(), TunnelClient)
+    )
+    .await
+    .map_err(|_| "SSH connection timeout".to_string())?
+    .map_err(|e| format!("SSH connection failed: {}", e))?;
+    
+    debug!("[Tunnel] Connected to SSH server {}", addr);
+    
     // Authenticate
-    match &creds.auth_type as &str {
+    let authenticated = match creds.auth_type.as_str() {
         "Key" => {
-            if let Some(key_path) = &creds.private_key_path {
-                let path = std::path::Path::new(key_path);
-                session.userauth_pubkey_file(
-                    &creds.username,
-                    None,
-                    path,
-                    creds.password.as_deref(),
-                ).map_err(|e| format!("Key auth failed: {}", e))?;
+            if let Some(ref key_path) = creds.private_key_path {
+                let key = russh_keys::load_secret_key(key_path, creds.password.as_deref())
+                    .map_err(|e| format!("Failed to load key: {}", e))?;
+                handle.authenticate_publickey(&creds.username, Arc::new(key))
+                    .await
+                    .map_err(|e| format!("Key auth failed: {}", e))?
+            } else {
+                return Err("Private key path not provided".into());
             }
         }
         "Agent" => {
-            session.userauth_agent(&creds.username)
-                .map_err(|e| format!("Agent auth failed: {}", e))?;
+            return Err("SSH Agent not supported in russh".into());
         }
         _ => {
-            if let Some(pwd) = &creds.password {
-                session.userauth_password(&creds.username, pwd)
-                    .map_err(|e| format!("Password auth failed: {}", e))?;
+            if let Some(ref pwd) = creds.password {
+                handle.authenticate_password(&creds.username, pwd)
+                    .await
+                    .map_err(|e| format!("Password auth failed: {}", e))?
+            } else {
+                return Err("Password not provided".into());
             }
         }
+    };
+    
+    if !authenticated {
+        return Err("Authentication rejected".into());
     }
-
-    if !session.authenticated() {
-        return Err("Authentication failed".into());
-    }
-
-    // Create direct TCP/IP channel
-    let mut channel = session.channel_direct_tcpip(
+    
+    debug!("[Tunnel] Authenticated, opening direct-tcpip channel to {}:{}", remote_host, remote_port);
+    
+    // Open direct-tcpip channel for port forwarding
+    let mut channel = handle.channel_open_direct_tcpip(
         remote_host,
-        remote_port,
-        None,
-    ).map_err(|e| format!("Failed to create tunnel: {}", e))?;
-
-    // Set non-blocking
-    session.set_blocking(false);
+        remote_port as u32,
+        "127.0.0.1",
+        0,
+    )
+    .await
+    .map_err(|e| format!("Failed to open tunnel channel: {}", e))?;
+    
+    debug!("[Tunnel] Channel opened, starting bidirectional copy");
+    
+    // Set client to non-blocking for polling
     client.set_nonblocking(true).ok();
-
+    
     let mut client_buf = [0u8; 8192];
-    let mut channel_buf = [0u8; 8192];
-
-    // Bidirectional copy
+    
+    // Bidirectional copy loop
     while running.load(Ordering::Relaxed) {
         let mut did_work = false;
-
-        // Client -> Channel
+        
+        // Client -> SSH Channel
         match client.read(&mut client_buf) {
-            Ok(0) => break, // Client closed
+            Ok(0) => {
+                debug!("[Tunnel] Client closed connection");
+                break;
+            }
             Ok(n) => {
-                channel.write_all(&client_buf[..n]).ok();
+                if let Err(e) = channel.data(&client_buf[..n]).await {
+                    debug!("[Tunnel] Failed to write to channel: {}", e);
+                    break;
+                }
                 did_work = true;
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(_) => break,
+            Err(e) => {
+                debug!("[Tunnel] Client read error: {}", e);
+                break;
+            }
         }
-
-        // Channel -> Client
-        match channel.read(&mut channel_buf) {
-            Ok(0) => break, // Channel closed
-            Ok(n) => {
-                client.write_all(&channel_buf[..n]).ok();
+        
+        // SSH Channel -> Client (non-blocking check)
+        match tokio::time::timeout(Duration::from_millis(10), channel.wait()).await {
+            Ok(Some(ChannelMsg::Data { data })) => {
+                if let Err(e) = client.write_all(&data) {
+                    debug!("[Tunnel] Failed to write to client: {}", e);
+                    break;
+                }
                 did_work = true;
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(_) => break,
+            Ok(Some(ChannelMsg::Eof)) | Ok(Some(ChannelMsg::Close)) | Ok(None) => {
+                debug!("[Tunnel] Channel closed");
+                break;
+            }
+            Ok(_) => {}
+            Err(_) => {} // Timeout, no data available
         }
-
+        
         if !did_work {
-            thread::sleep(Duration::from_millis(10));
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
-
+    
+    // Close channel
+    let _ = channel.eof().await;
+    let _ = channel.close().await;
+    
+    debug!("[Tunnel] Connection closed");
+    
     Ok(())
 }
 
@@ -266,6 +346,7 @@ pub fn stop_port_forward(
     let mut forwards = pf_state.active_forwards.lock().unwrap();
     if let Some(forward) = forwards.remove(&forward_id) {
         forward.running.store(false, Ordering::Relaxed);
+        info!("[PortForward:{}] Stopped", forward_id);
         Ok(())
     } else {
         Err("Port forward not found".into())

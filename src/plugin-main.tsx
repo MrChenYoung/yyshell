@@ -81,18 +81,27 @@ document.documentElement.classList.add(currentTheme);
 // Create plugin API
 const pluginAPI: PluginAPI = {
     loadServers: () => invoke<any[]>('load_servers'),
-    connect: (config) => invoke<string>('connect', config),
-    disconnect: (id) => invoke('disconnect', { id }),
+    connect: (config) => invoke<string>('russh_connect', {
+        id: config.id,
+        host: config.host,
+        port: config.port,
+        user: config.user,
+        password: config.password || null,
+        authType: config.auth_type || 'Password',
+        privateKeyPath: config.private_key_path || null,
+        serverId: config.serverId || null,
+    }),
+    disconnect: (id) => invoke('russh_disconnect', { id }),
     sshExec: (id, command) => invoke<string>('ssh_exec_command', { id, command }),
-    writePty: (id, data) => invoke('write_pty', { id, data }),
-    resizePty: (id, rows, cols) => invoke('resize_pty', { id, rows, cols }),
+    writePty: (id, data) => invoke('russh_write_pty', { id, data }),
+    resizePty: (id, rows, cols) => invoke('russh_resize_pty', { id, rows, cols }),
 
     // Attach to screen/tmux session by executing the appropriate command
     attachSession: async (id, sessionType, sessionName) => {
         const command = sessionType === 'screen'
             ? `screen -r ${sessionName}`
             : `tmux attach -t ${sessionName}`;
-        await invoke('write_pty', { id, data: command + '\n' });
+        await invoke('russh_write_pty', { id, data: command + '\n' });
     },
 
     // Register callback for terminal data

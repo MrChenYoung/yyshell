@@ -1,5 +1,6 @@
 // Plugin card component for marketplace
 
+import { useState, useEffect } from 'react';
 import { MarketplacePlugin, usePluginStore } from '../../stores/usePluginStore';
 import { useSettingsStore } from '../../stores/useSettingsStore';
 import { Button } from '../ui/button';
@@ -27,6 +28,10 @@ export function PluginCard({ plugin, onClick }: PluginCardProps) {
     const isInstalling = installing === plugin.id;
     const isOfficial = plugin.tags.includes('official');
     const hasUpdate = updates.some(u => u.id === plugin.id);
+    const [imageError, setImageError] = useState(false);
+
+    // Determine if we should show the custom icon
+    const showCustomIcon = plugin.icon && plugin.icon.startsWith('http') && !imageError;
 
     const handleInstallOrUpdate = async (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -61,8 +66,17 @@ export function PluginCard({ plugin, onClick }: PluginCardProps) {
 
             <div className="flex gap-3">
                 {/* Icon */}
-                <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center">
-                    <Puzzle className="w-6 h-6 text-primary" />
+                <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center overflow-hidden">
+                    {showCustomIcon ? (
+                        <img
+                            src={plugin.icon}
+                            alt={plugin.name}
+                            className="w-full h-full object-cover"
+                            onError={() => setImageError(true)}
+                        />
+                    ) : (
+                        <Puzzle className="w-6 h-6 text-primary" />
+                    )}
                 </div>
 
                 {/* Content */}
@@ -159,6 +173,7 @@ interface InstalledPluginCardProps {
         author: string;
         enabled: boolean;
         repository?: string;
+        icon?: string;
     };
     onToggle: () => void;
     onUninstall: () => void;
@@ -169,6 +184,16 @@ export function InstalledPluginCard({ plugin, onToggle, onUninstall }: Installed
     const { updates, installFromMarketplace, marketplacePlugins, installing } = usePluginStore();
     const update = updates.find(u => u.id === plugin.id);
     const isUpdating = installing === plugin.id;
+    const [iconDataUri, setIconDataUri] = useState<string | null>(null);
+
+    // Fetch icon on mount
+    useEffect(() => {
+        if (plugin.icon) {
+            invoke<string | null>('get_plugin_icon', { pluginId: plugin.id })
+                .then(dataUri => setIconDataUri(dataUri))
+                .catch(() => setIconDataUri(null));
+        }
+    }, [plugin.id, plugin.icon]);
 
     const handleUpdate = async () => {
         const mpPlugin = marketplacePlugins.find(m => m.id === plugin.id);
@@ -179,8 +204,12 @@ export function InstalledPluginCard({ plugin, onToggle, onUninstall }: Installed
 
     return (
         <div className="flex items-start gap-4 p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors">
-            <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                <Puzzle className="w-5 h-5 text-primary" />
+            <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center overflow-hidden">
+                {iconDataUri ? (
+                    <img src={iconDataUri} alt={plugin.name} className="w-full h-full object-cover" />
+                ) : (
+                    <Puzzle className="w-5 h-5 text-primary" />
+                )}
             </div>
 
             <div className="flex-1 min-w-0">

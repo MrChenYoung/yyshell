@@ -25,6 +25,7 @@ export interface PluginManifest {
     description: string;
     author: string;
     license?: string;
+    icon?: string;  // Icon path relative to plugin root
     repository?: string;
     contributes?: {
         panels?: PanelContribution[];
@@ -53,6 +54,7 @@ export interface PluginInfo {
     description: string;
     author: string;
     license?: string;
+    icon?: string;  // Icon path relative to plugin root
     repository?: string;
     contributes?: {
         panels?: PanelContribution[];

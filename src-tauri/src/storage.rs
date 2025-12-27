@@ -170,7 +170,7 @@ pub fn delete_server(app: AppHandle, id: String) -> Result<Vec<ServerConfig>, St
 }
 
 #[tauri::command]
-pub fn test_connection(
+pub async fn test_connection(
     host: String,
     port: u16,
     username: String,
@@ -178,43 +178,63 @@ pub fn test_connection(
     password: Option<String>,
     private_key_path: Option<String>,
 ) -> Result<String, String> {
-    use std::net::TcpStream;
+    use std::sync::Arc;
     use std::time::Duration;
-    use ssh2::Session;
+    use russh::*;
     
-    // Try to connect with timeout
-    let addr = format!("{}:{}", host, port);
-    let tcp = TcpStream::connect_timeout(
-        &addr.parse().map_err(|e: std::net::AddrParseError| e.to_string())?,
-        Duration::from_secs(10),
-    ).map_err(|e| format!("连接失败: {}", e))?;
+    // Simple client handler for testing
+    struct TestClient;
     
-    let mut sess = Session::new().map_err(|e| e.to_string())?;
-    sess.set_tcp_stream(tcp);
-    sess.handshake().map_err(|e| format!("SSH握手失败: {}", e))?;
-    
-    match auth_type {
-        AuthType::Password => {
-            let pwd = password.ok_or("密码未提供")?;
-            sess.userauth_password(&username, &pwd)
-                .map_err(|e| format!("密码认证失败: {}", e))?;
-        }
-        AuthType::Agent => {
-            sess.userauth_agent(&username)
-                .map_err(|e| format!("Agent认证失败: {}", e))?;
-        }
-        AuthType::Key => {
-            let key_path = private_key_path.ok_or("私钥路径未提供")?;
-            let path = std::path::Path::new(&key_path);
-            if let Some(passphrase) = &password {
-                sess.userauth_pubkey_file(&username, None, path, Some(passphrase))
-            } else {
-                sess.userauth_pubkey_file(&username, None, path, None)
-            }.map_err(|e| format!("密钥认证失败: {}", e))?;
+    #[async_trait::async_trait]
+    impl client::Handler for TestClient {
+        type Error = russh::Error;
+        
+        async fn check_server_key(
+            &mut self,
+            _server_public_key: &russh_keys::PublicKey
+        ) -> Result<bool, Self::Error> {
+            Ok(true)
         }
     }
     
-    if sess.authenticated() {
+    // Build config
+    let config = Arc::new(client::Config {
+        inactivity_timeout: Some(Duration::from_secs(30)),
+        ..Default::default()
+    });
+    
+    // Connect with timeout
+    let addr = format!("{}:{}", host, port);
+    let mut handle = tokio::time::timeout(
+        Duration::from_secs(10),
+        client::connect(config, addr.clone(), TestClient)
+    )
+    .await
+    .map_err(|_| "连接超时".to_string())?
+    .map_err(|e| format!("连接失败: {}", e))?;
+    
+    // Authenticate
+    let authenticated = match auth_type {
+        AuthType::Password => {
+            let pwd = password.ok_or("密码未提供")?;
+            handle.authenticate_password(&username, &pwd)
+                .await
+                .map_err(|e| format!("密码认证失败: {}", e))?
+        }
+        AuthType::Agent => {
+            return Err("SSH Agent认证在russh中尚未实现".into());
+        }
+        AuthType::Key => {
+            let key_path = private_key_path.ok_or("私钥路径未提供")?;
+            let key = russh_keys::load_secret_key(&key_path, password.as_deref())
+                .map_err(|e| format!("读取私钥失败: {}", e))?;
+            handle.authenticate_publickey(&username, Arc::new(key))
+                .await
+                .map_err(|e| format!("密钥认证失败: {}", e))?
+        }
+    };
+    
+    if authenticated {
         Ok("连接成功".into())
     } else {
         Err("认证失败".into())

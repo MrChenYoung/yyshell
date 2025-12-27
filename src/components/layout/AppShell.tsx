@@ -1,5 +1,13 @@
 import { useCallback, useState, useRef, useEffect } from "react";
 import { Server, GripVertical, FolderOpen, Zap, Cable, Puzzle, FileCode2 } from "lucide-react";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useSettingsStore } from "@/stores/useSettingsStore";
+import { PluginInfo } from "@/stores/usePluginStore";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { TerminalView } from "@/components/terminal/TerminalView";
@@ -75,10 +83,64 @@ function ResizeDivider({ direction, onResize }: DividerProps) {
     );
 }
 
+// Global plugin button with icon loading (no auto-connect, opens plugin in global mode)
+function GlobalPluginButton({ plugin }: { plugin: PluginInfo }) {
+    const { theme } = useSettingsStore();
+    const [iconDataUri, setIconDataUri] = useState<string | null>(null);
+
+    // Fetch icon on mount
+    useEffect(() => {
+        if (plugin.icon) {
+            invoke<string | null>('get_plugin_icon', { pluginId: plugin.id })
+                .then(dataUri => setIconDataUri(dataUri))
+                .catch(() => setIconDataUri(null));
+        }
+    }, [plugin.id, plugin.icon]);
+
+    const handleClick = async () => {
+        // Open plugin window WITHOUT auto-connect server (global mode)
+        await invoke('open_plugin_window', {
+            pluginId: plugin.id,
+            title: plugin.name,
+            theme: theme,
+            autoConnectServer: undefined, // No server - let user select from plugin UI
+        });
+    };
+
+    return (
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 hover:bg-primary/10 hover:text-primary"
+                    onClick={handleClick}
+                >
+                    {iconDataUri ? (
+                        <img
+                            src={iconDataUri}
+                            alt={plugin.name}
+                            className="w-5 h-5 rounded-sm object-cover"
+                        />
+                    ) : (
+                        <Puzzle className="w-4 h-4" />
+                    )}
+                </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-xs">
+                {plugin.name}
+            </TooltipContent>
+        </Tooltip>
+    );
+}
+
 export function AppShell() {
     const { tabs, activeTabId, addTab, setActiveTab } = useTabStore();
     const { servers, setActiveServer } = useServerStore();
-    const { loadPlugins } = usePluginStore();
+    const { loadPlugins, plugins } = usePluginStore();
+
+    // Filter to only show installed and enabled plugins
+    const enabledPlugins = plugins.filter(p => p.enabled);
 
     // Panel sizes in pixels
     const [sidebarWidth, setSidebarWidth] = useState(300);
@@ -206,17 +268,38 @@ export function AppShell() {
                     <SystemMonitor compact />
                 </div>
 
-                {/* Bottom Toolbar - Plugin Center only */}
+                {/* Bottom Toolbar - Plugin Center + Enabled Plugins */}
                 <div className="flex-shrink-0 border-t border-border/30 px-3 py-2 bg-[hsl(var(--sidebar-bg))]">
-                    <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 hover:bg-primary/10 hover:text-primary"
-                        onClick={() => setPluginCenterOpen(true)}
-                        title="插件中心"
-                    >
-                        <Puzzle className="w-4 h-4" />
-                    </Button>
+                    <TooltipProvider delayDuration={300}>
+                        <div className="flex items-center gap-1">
+                            {/* Plugin Center button */}
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-7 w-7 hover:bg-primary/10 hover:text-primary"
+                                        onClick={() => setPluginCenterOpen(true)}
+                                    >
+                                        <Puzzle className="w-4 h-4" />
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="text-xs">
+                                    插件中心
+                                </TooltipContent>
+                            </Tooltip>
+
+                            {/* Separator and enabled plugins */}
+                            {enabledPlugins.length > 0 && (
+                                <>
+                                    <div className="w-px h-5 bg-border/50 mx-1" />
+                                    {enabledPlugins.map(plugin => (
+                                        <GlobalPluginButton key={plugin.id} plugin={plugin} />
+                                    ))}
+                                </>
+                            )}
+                        </div>
+                    </TooltipProvider>
                 </div>
             </div>
 
@@ -304,7 +387,7 @@ export function AppShell() {
                                 onExecuteCommand={(cmd) => {
                                     if (activeTabId) {
                                         // Send command to active terminal
-                                        invoke("write_pty", { id: `conn-${activeTabId}`, data: cmd + "\n" });
+                                        invoke("russh_write_pty", { id: `conn-${activeTabId}`, data: cmd + "\n" });
                                     }
                                 }}
                             />
@@ -317,7 +400,7 @@ export function AppShell() {
                                         // This prevents 'exit' in script from closing the terminal session
                                         const escapedContent = content.replace(/'/g, "'\"'\"'");
                                         const wrappedScript = `bash -c '${escapedContent}'\n`;
-                                        invoke("write_pty", { id: `conn-${activeTabId}`, data: wrappedScript });
+                                        invoke("russh_write_pty", { id: `conn-${activeTabId}`, data: wrappedScript });
                                     }
                                 }}
                             />
