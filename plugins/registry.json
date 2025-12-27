@@ -7,7 +7,7 @@
             "description": "管理服务器上的 screen/tmux 后台会话",
             "author": "YYShell Team",
             "version": "1.1.1",
-            "icon": "layers",
+            "icon": "https://raw.githubusercontent.com/MrChenYoung/yyshell-plugin-session-manager/main/icon.png",
             "tags": [
                 "official",
                 "tools",
@@ -25,7 +25,7 @@
             "description": "显示服务器详细系统信息，包括硬件、网络、磁盘等",
             "author": "YYShell Team",
             "version": "1.0.0",
-            "icon": "info",
+            "icon": "https://raw.githubusercontent.com/MrChenYoung/yyshell/main/plugins/icons/system-info.png",
             "tags": [
                 "official",
                 "monitoring"
