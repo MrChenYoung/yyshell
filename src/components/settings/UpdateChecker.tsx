@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
+import { getVersion } from '@tauri-apps/api/app';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { RefreshCw, Download, CheckCircle, XCircle, Loader2, Sparkles } from 'lucide-react';
@@ -27,9 +28,14 @@ export function UpdateChecker() {
   const [progress, setProgress] = useState<UpdateProgress>({ downloaded: 0, total: 0 });
   const [error, setError] = useState<string>('');
   const [showDialog, setShowDialog] = useState(false);
+  const [currentVersion, setCurrentVersion] = useState<string>('');
 
-  // Check for updates on component mount (silent check)
+  // Get current version and check for updates on component mount
   useEffect(() => {
+    // Get current version
+    getVersion().then(setCurrentVersion).catch(console.error);
+
+    // Silent check for updates
     const silentCheck = async () => {
       try {
         const updateResult = await check();
@@ -43,7 +49,7 @@ export function UpdateChecker() {
         console.error('Failed to check for updates:', e);
       }
     };
-    
+
     // Delay initial check by 3 seconds
     const timer = setTimeout(silentCheck, 3000);
     return () => clearTimeout(timer);
@@ -52,7 +58,7 @@ export function UpdateChecker() {
   const handleCheckUpdate = async () => {
     setState('checking');
     setError('');
-    
+
     try {
       const updateResult = await check();
       if (updateResult) {
@@ -72,10 +78,10 @@ export function UpdateChecker() {
 
   const handleDownloadAndInstall = async () => {
     if (!update) return;
-    
+
     setState('downloading');
     setProgress({ downloaded: 0, total: 0 });
-    
+
     try {
       await update.downloadAndInstall((event) => {
         switch (event.event) {
@@ -83,9 +89,9 @@ export function UpdateChecker() {
             setProgress(prev => ({ ...prev, total: event.data.contentLength || 0 }));
             break;
           case 'Progress':
-            setProgress(prev => ({ 
+            setProgress(prev => ({
               downloaded: prev.downloaded + event.data.chunkLength,
-              total: prev.total 
+              total: prev.total
             }));
             break;
           case 'Finished':
@@ -110,8 +116,8 @@ export function UpdateChecker() {
     }
   };
 
-  const progressPercent = progress.total > 0 
-    ? Math.round((progress.downloaded / progress.total) * 100) 
+  const progressPercent = progress.total > 0
+    ? Math.round((progress.downloaded / progress.total) * 100)
     : 0;
 
   const formatBytes = (bytes: number) => {
@@ -136,7 +142,7 @@ export function UpdateChecker() {
           {state === 'up-to-date' && (
             <>
               <CheckCircle className="w-4 h-4 text-green-500" />
-              <span>已是最新版本</span>
+              <span>已是最新版本 v{currentVersion}</span>
             </>
           )}
           {state === 'error' && (
@@ -147,12 +153,15 @@ export function UpdateChecker() {
           )}
           {state === 'available' && (
             <>
-              <Sparkles className="w-4 h-4 text-yellow-500" />
-              <span>发现新版本 {update?.version}</span>
+              <span className="relative flex h-2 w-2 mr-1">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+              </span>
+              <span>当前版本 v{currentVersion} → <span className="text-green-500 font-medium">{update?.version}</span></span>
             </>
           )}
           {(state === 'idle' || state === 'downloading' || state === 'ready') && (
-            <span>检查应用更新</span>
+            <span>当前版本 v{currentVersion}</span>
           )}
         </div>
         <Button
@@ -160,11 +169,12 @@ export function UpdateChecker() {
           size="sm"
           onClick={state === 'available' ? () => setShowDialog(true) : handleCheckUpdate}
           disabled={state === 'checking' || state === 'downloading'}
+          className={state === 'available' ? 'border-green-500 text-green-500 hover:bg-green-500/10' : ''}
         >
           {state === 'available' ? (
             <>
               <Download className="w-4 h-4 mr-1" />
-              查看更新
+              立即更新
             </>
           ) : (
             <>
