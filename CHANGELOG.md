@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.9] - 2026-01-01
 
 ### Fixed
-- **修复更新功能构建错误** - 移除 pubkey 中多余的 `%` 字符
+- **修复更新功能构建错误** - 移除 pubkey 中多余的 `%` 字符，修复 CI 配置
 
 ## [1.0.8] - 2026-01-01
 
