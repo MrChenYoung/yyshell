@@ -13,6 +13,7 @@ mod plugin_runtime;
 mod plugin_manager;
 mod plugin_commands;
 mod plugin_window;
+mod editor_window;
 
 use log::info;
 
@@ -53,6 +54,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(ssh::AppState::default())
         .manage(ssh_russh::RusshAppState::default())  // russh state
         .manage(sftp::SftpState::default())
@@ -60,7 +63,7 @@ pub fn run() {
         .manage(plugin_commands::PluginState::default())
         .invoke_handler(tauri::generate_handler![
             // ssh2 commands (only monitoring and exec are still needed)
-            ssh::start_monitoring, ssh::ssh_exec_command,
+            ssh::start_monitoring, ssh::stop_monitoring, ssh::ssh_exec_command,
             // russh commands (new implementation)
             ssh_russh::russh_connect, ssh_russh::russh_disconnect, ssh_russh::russh_write_pty, ssh_russh::russh_resize_pty,
             sftp::init_sftp, sftp::sftp_list_dir, sftp::sftp_mkdir, sftp::sftp_create_file,
@@ -91,6 +94,8 @@ pub fn run() {
             plugin_commands::load_plugin_bundle, plugin_commands::get_plugin_icon,
             // Plugin window
             plugin_window::open_plugin_window,
+            // Editor window
+            editor_window::open_editor_window,
             // Logging commands
             get_log_directory, list_log_files, read_log_file
         ])

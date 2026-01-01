@@ -39,6 +39,7 @@ export default defineConfig(async () => ({
       input: {
         main: path.resolve(__dirname, 'index.html'),
         plugin: path.resolve(__dirname, 'plugin-window.html'),
+        editor: path.resolve(__dirname, 'editor-window.html'),
       },
       output: {
         manualChunks: {

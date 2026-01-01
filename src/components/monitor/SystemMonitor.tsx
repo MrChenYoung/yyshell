@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { Cpu, HardDrive, Activity, Wifi, ArrowDown, ArrowUp, Server, Copy, Check, Power, RefreshCw } from "lucide-react";
@@ -20,6 +20,22 @@ interface StatsPayload {
     load_5: number;
     load_15: number;
     os_name: string;
+    cpu_model: string;
+    cpu_cores: number;
+    // Extended monitoring data
+    uptime_seconds: number;
+    swap_total: number;
+    swap_used: number;
+    processes: number;
+    users: number;
+    kernel_version: string;
+    tcp_connections: number;
+    disk_read_bytes: number;
+    disk_write_bytes: number;
+    inode_total: number;
+    inode_used: number;
+    zombie_processes: number;
+    ssh_connections: number;
 }
 
 function formatBytes(bytes: number, decimals = 1): string {
@@ -36,6 +52,21 @@ function formatKB(kb: number, decimals = 1): string {
     const sizes = ["KB", "MB", "GB", "TB"];
     const i = Math.floor(Math.log(kb) / Math.log(k));
     return parseFloat((kb / Math.pow(k, i)).toFixed(decimals)) + " " + sizes[i];
+}
+
+function formatUptime(seconds: number): string {
+    if (seconds === 0) return "0s";
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+
+    if (days > 0) {
+        return `${days}天 ${hours}时`;
+    } else if (hours > 0) {
+        return `${hours}时 ${minutes}分`;
+    } else {
+        return `${minutes}分`;
+    }
 }
 
 interface CompactStatRowProps {
@@ -79,6 +110,7 @@ export function SystemMonitor({ compact = false }: SystemMonitorProps) {
     const [copied, setCopied] = useState(false);
     const [isDisconnecting, setIsDisconnecting] = useState(false);
     const [isReconnecting, setIsReconnecting] = useState(false);
+    const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
     const monitorFontSize = useSettingsStore((state) => state.fonts.monitor);
     const { servers, activeServerId, connectionStatuses, setConnectionStatus } = useServerStore();
     const { tabs, activeTabId, updateTab } = useTabStore();
@@ -116,18 +148,26 @@ export function SystemMonitor({ compact = false }: SystemMonitorProps) {
         }
     };
 
-    const handleDisconnect = async () => {
+    const handleDisconnectClick = () => {
+        setShowDisconnectConfirm(true);
+    };
+
+    const handleDisconnectConfirm = async () => {
         if (!activeServerId || !activeTabId) return;
 
+        setShowDisconnectConfirm(false);
         setIsDisconnecting(true);
         try {
             // Find the tab's connection ID
             const activeTab = tabs.find(t => t.id === activeTabId);
             if (activeTab?.connectionId) {
+                // Stop monitoring first
+                await invoke('stop_monitoring', { id: activeTab.connectionId });
+
                 // Emit disconnect event to terminal
                 await emit('terminal-disconnect', { tabId: activeTabId, connectionId: activeTab.connectionId });
 
-                await invoke('disconnect', { id: activeTab.connectionId });
+                await invoke('russh_disconnect', { id: activeTab.connectionId });
             }
 
             // Update connection status
@@ -136,13 +176,17 @@ export function SystemMonitor({ compact = false }: SystemMonitorProps) {
             // Update tab to show disconnected state
             updateTab(activeTabId, { connectionId: null });
 
-            // Clear stats
-            setStats(null);
+            // Don't clear stats - keep displaying last known data
+            // The UI will show "连接已断开" only if stats is null
         } catch (err) {
             console.error('Failed to disconnect:', err);
         } finally {
             setIsDisconnecting(false);
         }
+    };
+
+    const handleDisconnectCancel = () => {
+        setShowDisconnectConfirm(false);
     };
 
     const handleReconnect = async () => {
@@ -179,16 +223,31 @@ export function SystemMonitor({ compact = false }: SystemMonitorProps) {
         };
     }, [currentConnectionId]);
 
-    // Clear stats when switching tabs
+    // Clear stats when switching to a DIFFERENT tab (not on disconnect within same tab)
+    const lastTabIdRef = useRef(activeTabId);
     useEffect(() => {
-        setStats(null);
+        if (lastTabIdRef.current !== activeTabId) {
+            // Switching tabs - clear stats to avoid showing wrong server data
+            setStats(null);
+            lastTabIdRef.current = activeTabId;
+        }
     }, [activeTabId]);
 
+    // Show different messages based on connection state
     if (!stats) {
         return (
             <div className="h-full empty-state gap-2">
-                <Activity className="w-6 h-6 text-primary/50 animate-pulse" />
-                <span className="text-xs text-muted-foreground">等待系统数据...</span>
+                {!isConnected ? (
+                    <>
+                        <Power className="w-6 h-6 text-muted-foreground/50" />
+                        <span className="text-xs text-muted-foreground">连接已断开</span>
+                    </>
+                ) : (
+                    <>
+                        <Activity className="w-6 h-6 text-primary/50 animate-pulse" />
+                        <span className="text-xs text-muted-foreground">等待系统数据...</span>
+                    </>
+                )}
             </div>
         );
     }
@@ -238,7 +297,7 @@ export function SystemMonitor({ compact = false }: SystemMonitorProps) {
                                         variant="outline"
                                         size="sm"
                                         className="h-6 text-[11px] flex-1 text-red-400 border-red-400/30 hover:bg-red-500/10 hover:text-red-300"
-                                        onClick={handleDisconnect}
+                                        onClick={handleDisconnectClick}
                                         disabled={isDisconnecting}
                                     >
                                         <Power className="w-3 h-3 mr-1" />
@@ -256,6 +315,30 @@ export function SystemMonitor({ compact = false }: SystemMonitorProps) {
                                         {isReconnecting ? '连接中...' : '重新连接'}
                                     </Button>
                                 )}
+                            </div>
+                        )}
+                        {/* 断开连接确认弹窗 */}
+                        {showDisconnectConfirm && (
+                            <div className="mt-2 p-2 bg-red-500/10 border border-red-400/30 rounded-md">
+                                <p className="text-[11px] text-red-300 mb-2">确定要断开连接吗？</p>
+                                <div className="flex gap-1.5">
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-5 text-[10px] flex-1 text-red-400 border-red-400/30 hover:bg-red-500/20"
+                                        onClick={handleDisconnectConfirm}
+                                    >
+                                        确定
+                                    </Button>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-5 text-[10px] flex-1 text-muted-foreground border-border/50 hover:bg-muted/50"
+                                        onClick={handleDisconnectCancel}
+                                    >
+                                        取消
+                                    </Button>
+                                </div>
                             </div>
                         )}
                     </div>
@@ -279,17 +362,53 @@ export function SystemMonitor({ compact = false }: SystemMonitorProps) {
                     <CompactStatRow
                         icon={<Activity className="w-3 h-3" />}
                         label="内存"
-                        value={`${ramPercent.toFixed(0)}%`}
+                        value={`${formatKB(stats.ram_used)} / ${formatKB(stats.ram_total)}`}
                         percent={ramPercent}
                         color="bg-purple-500"
+                    />
+                    {/* Swap - 紧跟在内存后面，始终显示 */}
+                    <CompactStatRow
+                        icon={<Activity className="w-3 h-3" />}
+                        label="Swap"
+                        value={stats.swap_total > 0 ? `${formatKB(stats.swap_used)} / ${formatKB(stats.swap_total)}` : '未启用'}
+                        percent={stats.swap_total > 0 ? (stats.swap_used / stats.swap_total) * 100 : 0}
+                        color="bg-pink-500"
                     />
                     <CompactStatRow
                         icon={<HardDrive className="w-3 h-3" />}
                         label="磁盘"
-                        value={`${diskPercent.toFixed(0)}%`}
+                        value={`${formatKB(stats.disk_used)} / ${formatKB(stats.disk_total)}`}
                         percent={diskPercent}
                         color="bg-amber-500"
                     />
+                    {/* 磁盘 IO - 紧跟在磁盘后面 */}
+                    {(stats.disk_read_bytes > 0 || stats.disk_write_bytes > 0) && (
+                        <div className="flex items-center gap-2 py-1.5">
+                            <div className="p-1 rounded bg-teal-500/20 text-teal-500">
+                                <HardDrive className="w-3 h-3" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-[11px] text-muted-foreground">磁盘 IO</span>
+                                    <span className="text-xs font-medium">
+                                        <span className="text-green-400">R:{formatBytes(stats.disk_read_bytes)}/s</span>
+                                        {' '}
+                                        <span className="text-cyan-400">W:{formatBytes(stats.disk_write_bytes)}/s</span>
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    {/* Inode 使用率 - 紧跟在磁盘 IO 后面 */}
+                    {stats.inode_total > 0 && (
+                        <CompactStatRow
+                            icon={<HardDrive className="w-3 h-3" />}
+                            label="Inode"
+                            value={`${((stats.inode_used / stats.inode_total) * 100).toFixed(0)}% (${stats.inode_used.toLocaleString()})`}
+                            percent={(stats.inode_used / stats.inode_total) * 100}
+                            color="bg-orange-500"
+                        />
+                    )}
                 </div>
 
                 {/* Network */}
@@ -318,19 +437,65 @@ export function SystemMonitor({ compact = false }: SystemMonitorProps) {
 
                 {/* Memory/Disk Details */}
                 <div className="mt-3 pt-2 border-t border-border/30 text-[10px] text-muted-foreground space-y-1">
+                    {stats.uptime_seconds > 0 && (
+                        <div className="flex justify-between">
+                            <span>运行时间</span>
+                            <span className="text-green-400">{formatUptime(stats.uptime_seconds)}</span>
+                        </div>
+                    )}
                     {stats.os_name && (
                         <div className="flex justify-between">
                             <span>系统</span>
                             <span className="truncate ml-2 text-right">{stats.os_name}</span>
                         </div>
                     )}
+                    {stats.kernel_version && (
+                        <div className="flex justify-between">
+                            <span>内核</span>
+                            <span className="truncate ml-2 text-right">{stats.kernel_version}</span>
+                        </div>
+                    )}
+                    {stats.cpu_model && (
+                        <div className="flex justify-between">
+                            <span>CPU</span>
+                            <span className="truncate ml-2 text-right" title={stats.cpu_model}>
+                                {stats.cpu_model.length > 25 ? stats.cpu_model.substring(0, 25) + '...' : stats.cpu_model}
+                            </span>
+                        </div>
+                    )}
+                    {stats.cpu_cores > 0 && (
+                        <div className="flex justify-between">
+                            <span>核心数</span>
+                            <span>{stats.cpu_cores} 核</span>
+                        </div>
+                    )}
+                    {stats.processes > 0 && (
+                        <div className="flex justify-between">
+                            <span>进程数</span>
+                            <span>{stats.processes}</span>
+                        </div>
+                    )}
                     <div className="flex justify-between">
-                        <span>内存</span>
-                        <span>{formatKB(stats.ram_used)} / {formatKB(stats.ram_total)}</span>
+                        <span>僵尸进程</span>
+                        <span className={stats.zombie_processes > 0 ? 'text-red-400' : ''}>
+                            {stats.zombie_processes}
+                        </span>
                     </div>
+                    {stats.users > 0 && (
+                        <div className="flex justify-between">
+                            <span>用户</span>
+                            <span>{stats.users} 人在线</span>
+                        </div>
+                    )}
+                    {stats.tcp_connections > 0 && (
+                        <div className="flex justify-between">
+                            <span>TCP 连接</span>
+                            <span>{stats.tcp_connections}</span>
+                        </div>
+                    )}
                     <div className="flex justify-between">
-                        <span>磁盘</span>
-                        <span>{formatKB(stats.disk_used)} / {formatKB(stats.disk_total)}</span>
+                        <span>SSH 连接</span>
+                        <span>{stats.ssh_connections}</span>
                     </div>
                 </div>
             </div>

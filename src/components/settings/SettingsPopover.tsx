@@ -133,7 +133,45 @@ function IdleTimeoutControl() {
     );
 }
 
+// File editor mode options
+const FILE_EDITOR_MODE_OPTIONS = [
+    { value: 'panel', label: '底部面板' },
+    { value: 'tab', label: '新标签页' },
+    { value: 'window', label: '独立窗口' },
+];
+
+function FileEditorModeControl() {
+    const { fileEditorMode, setFileEditorMode } = useSettingsStore();
+
+    return (
+        <div className="pt-2 border-t border-border">
+            <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">文件编辑</span>
+                <Select
+                    value={fileEditorMode}
+                    onValueChange={(value) => setFileEditorMode(value as 'panel' | 'tab' | 'window')}
+                >
+                    <SelectTrigger className="w-24 h-7 text-xs">
+                        <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                        {FILE_EDITOR_MODE_OPTIONS.map(opt => (
+                            <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                                {opt.label}
+                            </SelectItem>
+                        ))}
+                    </SelectContent>
+                </Select>
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1">
+                远程文件编辑器显示方式
+            </p>
+        </div>
+    );
+}
+
 import { LogViewer } from "./LogViewer";
+import { UpdateChecker } from "./UpdateChecker";
 
 export function SettingsPopover() {
     const { resetFonts, theme, setTheme, fonts, loadSettings } = useSettingsStore();
@@ -630,6 +668,9 @@ export function SettingsPopover() {
                         {/* Idle Timeout Section */}
                         <IdleTimeoutControl />
 
+                        {/* File Editor Mode Section */}
+                        <FileEditorModeControl />
+
                         {/* Backup & Restore Section */}
                         <div className="pt-2 border-t border-border">
                             <span className="text-sm font-medium">数据管理</span>
@@ -675,6 +716,12 @@ export function SettingsPopover() {
                             <p className="text-[10px] text-muted-foreground mt-1.5">
                                 SSH 连接日志，帮助诊断断开问题
                             </p>
+                        </div>
+
+                        {/* Update Section */}
+                        <div className="pt-2 border-t border-border">
+                            <span className="text-sm font-medium mb-2 block">版本更新</span>
+                            <UpdateChecker />
                         </div>
                     </div>
                 </PopoverContent>

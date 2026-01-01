@@ -242,6 +242,11 @@ pub async fn russh_connect(
     tokio::spawn(async move {
         debug!("[SSH:{}] IO task started", id_clone);
         
+        // Create idle timeout check interval (check every 30 seconds)
+        let mut idle_check_interval = tokio::time::interval(Duration::from_secs(30));
+        // Skip the first immediate tick
+        idle_check_interval.tick().await;
+        
         loop {
             tokio::select! {
                 // Handle incoming data from SSH
@@ -300,6 +305,11 @@ pub async fn russh_connect(
                 cmd = write_rx.recv() => {
                     match cmd {
                         Some(WriteCommand::Data(bytes)) => {
+                            // Update last activity on user input
+                            if let Ok(mut last) = conn_clone.last_activity.lock() {
+                                *last = Instant::now();
+                            }
+                            
                             if let Err(e) = channel.data(&bytes[..]).await {
                                 error!("[SSH:{}] Write error: {}", id_clone, e);
                                 break;
@@ -312,6 +322,33 @@ pub async fn russh_connect(
                         }
                         Some(WriteCommand::Disconnect) | None => {
                             info!("[SSH:{}] Disconnect command received", id_clone);
+                            let _ = channel.eof().await;
+                            let _ = channel.close().await;
+                            break;
+                        }
+                    }
+                }
+                
+                // Idle timeout check
+                _ = idle_check_interval.tick() => {
+                    // Check if idle timeout is enabled (0 = never disconnect)
+                    if conn_clone.idle_timeout_minutes > 0 {
+                        let should_disconnect = {
+                            if let Ok(last) = conn_clone.last_activity.lock() {
+                                let idle_duration = Instant::now().duration_since(*last);
+                                let timeout = Duration::from_secs(conn_clone.idle_timeout_minutes as u64 * 60);
+                                idle_duration > timeout
+                            } else {
+                                false
+                            }
+                        };
+                        
+                        if should_disconnect {
+                            info!("[SSH:{}] Idle timeout ({} min), disconnecting", id_clone, conn_clone.idle_timeout_minutes);
+                            let _ = app_clone.emit("connection-lost", ConnectionLostPayload {
+                                id: id_clone.clone(),
+                                reason: format!("空闲超时 ({} 分钟)", conn_clone.idle_timeout_minutes),
+                            });
                             let _ = channel.eof().await;
                             let _ = channel.close().await;
                             break;

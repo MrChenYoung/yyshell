@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useDirectoryCacheStore } from "@/stores/useDirectoryCacheStore";
+import { useBottomPanelEditorStore } from "@/stores/useBottomPanelEditorStore";
 import {
     ContextMenu,
     ContextMenuContent,
@@ -31,10 +32,10 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { FileEditor } from "./FileEditor";
 import { ImagePreview } from "./ImagePreview";
 import { TransferPanel } from "./TransferPanel";
 import { useTransferStore } from "@/stores/useTransferStore";
+import { useTabStore } from "@/stores/useTabStore";
 
 interface FileEntry {
     name: string;
@@ -138,6 +139,7 @@ export function FileManager({ connectionId }: FileManagerProps) {
     ]);
     const [expandingPath, setExpandingPath] = useState<string | null>(null); // Track which folder is loading
     const fileManagerFontSize = useSettingsStore((state) => state.fonts.fileManager);
+    const fileEditorMode = useSettingsStore((state) => state.fileEditorMode);
 
     // New folder/file dialog state
     const [newItemDialogOpen, setNewItemDialogOpen] = useState(false);
@@ -150,6 +152,12 @@ export function FileManager({ connectionId }: FileManagerProps) {
     const [renameTarget, setRenameTarget] = useState<FileEntry | null>(null);
     const [newName, setNewName] = useState('');
     const [isRenaming, setIsRenaming] = useState(false);
+
+    // Inline rename state (for quick rename via slow double-click or Enter key)
+    const [inlineEditingFile, setInlineEditingFile] = useState<string | null>(null);
+    const [inlineEditValue, setInlineEditValue] = useState('');
+    const lastClickRef = useRef<{ name: string; time: number } | null>(null);
+    const inlineInputRef = useRef<HTMLInputElement>(null);
 
     // Delete confirmation dialog state
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -244,13 +252,45 @@ export function FileManager({ connectionId }: FileManagerProps) {
         operation: 'copy' | 'cut'
     } | null>(null);
 
-    // File preview/editor state
-    const [editorFile, setEditorFile] = useState<{ path: string; name: string } | null>(null);
+    // File preview state (editor state moved to shared store for AppShell overlay)
+    const { openFile: openFileInDrawer } = useBottomPanelEditorStore();
     const [previewImage, setPreviewImage] = useState<{ path: string; name: string } | null>(null);
 
     // Transfer panel state
     const [transferPanelExpanded, setTransferPanelExpanded] = useState(true);
     const { addTransfer } = useTransferStore();
+    const { addTab } = useTabStore();
+
+    // Open file in editor based on mode setting
+    const openFileInEditor = useCallback((filePath: string, fileName: string) => {
+        if (!connectionId) return;
+
+        if (fileEditorMode === 'panel') {
+            // Panel mode: use shared store to show drawer in AppShell
+            openFileInDrawer(connectionId, filePath, fileName);
+        } else if (fileEditorMode === 'tab') {
+            // Tab mode: create new editor tab
+            addTab({
+                connectionId: null,
+                serverId: null,
+                title: fileName,
+                type: 'editor',
+                editorInfo: {
+                    connectionId,
+                    filePath,
+                    fileName,
+                },
+            });
+        } else {
+            // Window mode: open in new system window
+            invoke('open_editor_window', {
+                connectionId,
+                filePath,
+                fileName,
+                theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+            });
+        }
+    }, [connectionId, fileEditorMode, addTab]);
     // Opening file state with progress
     const [openingFile, setOpeningFile] = useState<{
         name: string;
@@ -307,7 +347,7 @@ export function FileManager({ connectionId }: FileManagerProps) {
 
         switch (fileType) {
             case 'text':
-                setEditorFile({ path: filePath, name: file.name });
+                openFileInEditor(filePath, file.name);
                 break;
             case 'image':
                 setPreviewImage({ path: filePath, name: file.name });
@@ -359,6 +399,14 @@ export function FileManager({ connectionId }: FileManagerProps) {
             errorMsg.includes("SSH session not found");
     };
 
+    // Helper function to check if error is SFTP connection error (needs reconnect)
+    const isSftpConnectionError = (errorMsg: string) => {
+        return errorMsg.includes("SFTP not connected") ||
+            errorMsg.includes("connection") ||
+            errorMsg.includes("session") ||
+            errorMsg.includes("socket");
+    };
+
     const initSftp = useCallback(async () => {
         if (!connectionId) return;
 
@@ -393,8 +441,11 @@ export function FileManager({ connectionId }: FileManagerProps) {
         setLoading(false);
     }, [connectionId]);
 
-    const loadDirectory = useCallback(async (path: string, forceRefresh: boolean = false) => {
-        if (!connectionId || !sftpInitialized) return;
+    const loadDirectory = useCallback(async (path: string, forceRefresh: boolean = false, skipReconnect: boolean = false) => {
+        if (!connectionId) return;
+
+        // If not initialized, skip loading (will be triggered after init)
+        if (!sftpInitialized && !skipReconnect) return;
 
         const { getCache, setCache, invalidatePath } = useDirectoryCacheStore.getState();
 
@@ -417,9 +468,15 @@ export function FileManager({ connectionId }: FileManagerProps) {
                             setFiles(result);
                         }
                     })
-                    .catch(() => {
-                        // If background refresh fails, invalidate cache
-                        invalidatePath(connectionId, path);
+                    .catch((bgError) => {
+                        // If background refresh fails due to connection error, trigger reconnect
+                        const bgErrorMsg = String(bgError);
+                        if (isSftpConnectionError(bgErrorMsg)) {
+                            // Invalidate cache and mark as not initialized
+                            invalidatePath(connectionId, path);
+                            initializedConnectionsRef.current.delete(connectionId);
+                            setSftpInitialized(false);
+                        }
                     });
                 return;
             }
@@ -435,11 +492,24 @@ export function FileManager({ connectionId }: FileManagerProps) {
             setCurrentPath(path);
             setSelectedFile(null);
         } catch (e) {
-            setError(String(e));
+            const errorMsg = String(e);
+
+            // Check if this is a connection error - trigger auto-reconnect
+            if (isSftpConnectionError(errorMsg) && !skipReconnect) {
+                console.log('[SFTP] Connection error detected, attempting to reconnect...');
+                // Reset initialization state
+                initializedConnectionsRef.current.delete(connectionId);
+                setSftpInitialized(false);
+                setError(null);
+                // Trigger re-init (will cascade to loadDirectory via useEffect)
+                initSftp();
+            } else {
+                setError(errorMsg);
+            }
         } finally {
             setLoading(false);
         }
-    }, [connectionId, sftpInitialized]);
+    }, [connectionId, sftpInitialized, initSftp]);
 
     const loadRootTree = useCallback(async () => {
         if (!connectionId || !sftpInitialized) return;
@@ -745,10 +815,80 @@ export function FileManager({ connectionId }: FileManagerProps) {
         }
     };
 
-    const handleRefresh = () => {
-        // Force refresh: bypass cache and reload from server
-        loadDirectory(currentPath, true);
-        refreshTreeNode(currentPath);
+    const handleRefresh = async () => {
+        if (!connectionId) return;
+
+        // Check if SFTP is still connected by checking sftpInitialized
+        // If not initialized, re-init first
+        if (!sftpInitialized) {
+            console.log('[SFTP] Not initialized, reconnecting before refresh...');
+            setLoading(true);
+            setError(null);
+
+            try {
+                // Reset initialization state and reconnect
+                initializedConnectionsRef.current.delete(connectionId);
+                await invoke("init_sftp", { id: connectionId });
+                setSftpInitialized(true);
+                initializedConnectionsRef.current.add(connectionId);
+
+                // Now load directory
+                const result = await invoke<FileEntry[]>("sftp_list_dir", { id: connectionId, path: currentPath });
+                const { setCache } = useDirectoryCacheStore.getState();
+                setCache(connectionId, currentPath, result);
+                setFiles(result);
+                setSelectedFile(null);
+                refreshTreeNode(currentPath);
+            } catch (e) {
+                setError(String(e));
+            } finally {
+                setLoading(false);
+            }
+            return;
+        }
+
+        // If already initialized, just do normal refresh
+        // But wrap in try-catch to handle connection errors
+        setLoading(true);
+        setError(null);
+
+        try {
+            const result = await invoke<FileEntry[]>("sftp_list_dir", { id: connectionId, path: currentPath });
+            const { setCache } = useDirectoryCacheStore.getState();
+            setCache(connectionId, currentPath, result);
+            setFiles(result);
+            setSelectedFile(null);
+            refreshTreeNode(currentPath);
+        } catch (e) {
+            const errorMsg = String(e);
+
+            // Connection error - try to reconnect
+            if (isSftpConnectionError(errorMsg)) {
+                console.log('[SFTP] Connection lost during refresh, reconnecting...');
+                initializedConnectionsRef.current.delete(connectionId);
+                setSftpInitialized(false);
+
+                try {
+                    await invoke("init_sftp", { id: connectionId });
+                    setSftpInitialized(true);
+                    initializedConnectionsRef.current.add(connectionId);
+
+                    // Retry loading directory
+                    const result = await invoke<FileEntry[]>("sftp_list_dir", { id: connectionId, path: currentPath });
+                    const { setCache } = useDirectoryCacheStore.getState();
+                    setCache(connectionId, currentPath, result);
+                    setFiles(result);
+                    setSelectedFile(null);
+                    refreshTreeNode(currentPath);
+                } catch (reconnectError) {
+                    setError(String(reconnectError));
+                }
+            } else {
+                setError(errorMsg);
+            }
+        } finally {
+            setLoading(false);
+        }
     };
 
     const handleOpenNewItemDialog = (type: 'folder' | 'file') => {
@@ -969,6 +1109,108 @@ export function FileManager({ connectionId }: FileManagerProps) {
         setNewName(file.name);
         setRenameDialogOpen(true);
     };
+
+    // Start inline rename (triggered by slow double-click or Enter key)
+    const startInlineRename = useCallback((file: FileEntry) => {
+        setInlineEditingFile(file.name);
+        setInlineEditValue(file.name);
+        // Focus will be handled by useEffect when inlineInputRef is mounted
+    }, []);
+
+    // Handle file click with slow double-click detection
+    const handleFileClick = useCallback((file: FileEntry) => {
+        const now = Date.now();
+
+        // If already in inline edit mode, don't process clicks
+        if (inlineEditingFile) return;
+
+        if (lastClickRef.current &&
+            lastClickRef.current.name === file.name &&
+            now - lastClickRef.current.time > 300 &&
+            now - lastClickRef.current.time < 1000) {
+            // Slow double-click detected (300ms-1000ms) - trigger inline rename
+            startInlineRename(file);
+            lastClickRef.current = null;
+        } else {
+            // Normal click - select file
+            setSelectedFile(file.name);
+            lastClickRef.current = { name: file.name, time: now };
+        }
+    }, [inlineEditingFile, startInlineRename]);
+
+    // Handle inline rename submit
+    const handleInlineRenameSubmit = useCallback(async () => {
+        if (!connectionId || !inlineEditingFile || !inlineEditValue.trim()) {
+            setInlineEditingFile(null);
+            return;
+        }
+
+        // Skip if name didn't change
+        if (inlineEditValue.trim() === inlineEditingFile) {
+            setInlineEditingFile(null);
+            return;
+        }
+
+        try {
+            const oldPath = currentPath === '/'
+                ? '/' + inlineEditingFile
+                : currentPath + '/' + inlineEditingFile;
+            const newPath = currentPath === '/'
+                ? '/' + inlineEditValue.trim()
+                : currentPath + '/' + inlineEditValue.trim();
+
+            await invoke('sftp_rename', {
+                id: connectionId,
+                oldPath,
+                newPath,
+            });
+
+            // Invalidate cache and refresh after rename
+            const { invalidatePath } = useDirectoryCacheStore.getState();
+            invalidatePath(connectionId, currentPath);
+            loadDirectory(currentPath, true);
+        } catch (err) {
+            console.error('Inline rename failed:', err);
+            setError(String(err));
+        } finally {
+            setInlineEditingFile(null);
+            setInlineEditValue('');
+        }
+    }, [connectionId, inlineEditingFile, inlineEditValue, currentPath, loadDirectory]);
+
+    // Handle inline rename cancel
+    const handleInlineRenameCancel = useCallback(() => {
+        setInlineEditingFile(null);
+        setInlineEditValue('');
+    }, []);
+
+    // Focus input when entering inline edit mode
+    useEffect(() => {
+        if (inlineEditingFile && inlineInputRef.current) {
+            inlineInputRef.current.focus();
+            // Select filename without extension
+            const lastDot = inlineEditValue.lastIndexOf('.');
+            if (lastDot > 0) {
+                inlineInputRef.current.setSelectionRange(0, lastDot);
+            } else {
+                inlineInputRef.current.select();
+            }
+        }
+    }, [inlineEditingFile]);
+
+    // Handle keyboard events for Enter key rename trigger
+    const handleFileListKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (e.key === 'Enter' && selectedFile && !inlineEditingFile) {
+            e.preventDefault();
+            const file = files.find(f => f.name === selectedFile);
+            if (file) {
+                startInlineRename(file);
+            }
+        } else if (e.key === 'Escape' && inlineEditingFile) {
+            e.preventDefault();
+            handleInlineRenameCancel();
+        }
+    }, [selectedFile, inlineEditingFile, files, startInlineRename, handleInlineRenameCancel]);
 
     // Perform rename
     const handleRename = async () => {
@@ -1225,7 +1467,8 @@ export function FileManager({ connectionId }: FileManagerProps) {
     }
 
     return (
-        <div className="h-full flex flex-col font-size-area" style={{ '--area-font-size': `${fileManagerFontSize}px` } as React.CSSProperties}>
+        <div className="h-full flex flex-col font-size-area relative" style={{ '--area-font-size': `${fileManagerFontSize}px` } as React.CSSProperties}>
+            {/* File Manager Toolbar - always visible */}
             <div className="flex items-center gap-1 px-2 py-1 border-b border-border/30 bg-secondary/20 flex-shrink-0">
                 <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleGoUp} disabled={currentPath === "/"}>
                     <ArrowUp className="w-3.5 h-3.5" />
@@ -1274,253 +1517,122 @@ export function FileManager({ connectionId }: FileManagerProps) {
                 </Button>
             </div>
 
+            {/* File Manager Content - always rendered */}
             <div className="flex-1 flex min-h-0">
-                <div className="w-48 border-r border-border/30 flex-shrink-0">
-                    <ScrollArea className="h-full">
-                        <div className="p-1">{treeNodes.map((n) => renderTreeNode(n, 0))}</div>
-                    </ScrollArea>
-                </div>
+                <>
+                    <div className="w-48 border-r border-border/30 flex-shrink-0">
+                        <ScrollArea className="h-full">
+                            <div className="p-1">{treeNodes.map((n) => renderTreeNode(n, 0))}</div>
+                        </ScrollArea>
+                    </div>
 
-                <ContextMenu>
-                    <ContextMenuTrigger asChild>
-                        <div className={"flex-1 flex flex-col min-w-0 relative transition-colors " + (isDraggingOver ? "bg-primary/10 border-2 border-dashed border-primary" : "")}>
-                            {/* Drag overlay */}
-                            {isDraggingOver && (
-                                <div className="absolute inset-0 flex items-center justify-center bg-primary/20 z-10 pointer-events-none">
-                                    <div className="text-center">
-                                        <Upload className="w-12 h-12 mx-auto text-primary mb-2" />
-                                        <p className="text-sm font-medium text-primary">松开以上传文件</p>
+                    <ContextMenu>
+                        <ContextMenuTrigger asChild>
+                            <div className={"flex-1 flex flex-col min-w-0 relative transition-colors " + (isDraggingOver ? "bg-primary/10 border-2 border-dashed border-primary" : "")}>
+                                {/* Drag overlay */}
+                                {isDraggingOver && (
+                                    <div className="absolute inset-0 flex items-center justify-center bg-primary/20 z-10 pointer-events-none">
+                                        <div className="text-center">
+                                            <Upload className="w-12 h-12 mx-auto text-primary mb-2" />
+                                            <p className="text-sm font-medium text-primary">松开以上传文件</p>
+                                        </div>
                                     </div>
-                                </div>
-                            )}
-                            <ScrollArea className="flex-1">
-                                {!sftpInitialized ? (
-                                    // SFTP not initialized yet - show loading, waiting, or error
-                                    error && !isSSHNotConnectedError(error) ? (
-                                        // Non-connection error - show error message
+                                )}
+                                <ScrollArea className="flex-1">
+                                    {!sftpInitialized ? (
+                                        // SFTP not initialized yet - show loading, waiting, or error
+                                        error && !isSSHNotConnectedError(error) ? (
+                                            // Non-connection error - show error message
+                                            <div className="p-4 text-center text-red-400 text-xs">
+                                                <p>SFTP 初始化失败: {error}</p>
+                                                <Button variant="outline" size="sm" className="mt-2" onClick={initSftp}>重试</Button>
+                                            </div>
+                                        ) : error && isSSHNotConnectedError(error) && !loading ? (
+                                            // SSH not connected after retries - show waiting state with retry
+                                            <div className="p-4 text-center text-muted-foreground text-xs">
+                                                <p className="mb-2">等待 SSH 连接...</p>
+                                                <Button variant="outline" size="sm" onClick={initSftp}>重试</Button>
+                                            </div>
+                                        ) : (
+                                            // Still loading/initializing
+                                            <div className="p-4 text-center text-muted-foreground text-xs">
+                                                <RefreshCw className="w-5 h-5 mx-auto animate-spin mb-2" />正在初始化 SFTP...
+                                            </div>
+                                        )
+                                    ) : error ? (
                                         <div className="p-4 text-center text-red-400 text-xs">
-                                            <p>SFTP 初始化失败: {error}</p>
-                                            <Button variant="outline" size="sm" className="mt-2" onClick={initSftp}>重试</Button>
+                                            <p>加载失败: {error}</p>
+                                            <Button variant="outline" size="sm" className="mt-2" onClick={handleRefresh}>重试</Button>
                                         </div>
-                                    ) : error && isSSHNotConnectedError(error) && !loading ? (
-                                        // SSH not connected after retries - show waiting state with retry
+                                    ) : loading && files.length === 0 ? (
                                         <div className="p-4 text-center text-muted-foreground text-xs">
-                                            <p className="mb-2">等待 SSH 连接...</p>
-                                            <Button variant="outline" size="sm" onClick={initSftp}>重试</Button>
+                                            <RefreshCw className="w-5 h-5 mx-auto animate-spin mb-2" />加载中...
                                         </div>
-                                    ) : (
-                                        // Still loading/initializing
-                                        <div className="p-4 text-center text-muted-foreground text-xs">
-                                            <RefreshCw className="w-5 h-5 mx-auto animate-spin mb-2" />正在初始化 SFTP...
-                                        </div>
-                                    )
-                                ) : error ? (
-                                    <div className="p-4 text-center text-red-400 text-xs">
-                                        <p>加载失败: {error}</p>
-                                        <Button variant="outline" size="sm" className="mt-2" onClick={handleRefresh}>重试</Button>
-                                    </div>
-                                ) : loading && files.length === 0 ? (
-                                    <div className="p-4 text-center text-muted-foreground text-xs">
-                                        <RefreshCw className="w-5 h-5 mx-auto animate-spin mb-2" />加载中...
-                                    </div>
-                                ) : viewMode === 'grid' ? (
-                                    /* Grid View */
-                                    <div className="p-1 grid grid-cols-6 gap-1">
-                                        {sortedFiles.map((file) => (
-                                            <ContextMenu key={file.name}>
-                                                <ContextMenuTrigger asChild>
-                                                    <div
-                                                        className={"flex flex-col items-center p-1.5 rounded cursor-pointer transition-colors hover:bg-primary/10" + (selectedFile === file.name ? " bg-primary/20" : "")}
-                                                        onClick={() => setSelectedFile(file.name)}
-                                                        onDoubleClick={() => handleFileDoubleClick(file)}
-                                                        onContextMenu={(e) => e.stopPropagation()}
-                                                    >
-                                                        <div className="w-7 h-7 flex items-center justify-center mb-0.5">
-                                                            {file.is_dir ? (
-                                                                <Folder className="w-6 h-6 text-yellow-400" />
-                                                            ) : (
-                                                                <File className="w-6 h-6 text-gray-400" />
-                                                            )}
-                                                        </div>
-                                                        <span className={"text-[9px] text-center truncate w-full leading-tight" + (file.is_dir ? " text-yellow-200" : "")}>
-                                                            {file.name}
-                                                        </span>
-                                                        {!file.is_dir && (
-                                                            <span className="text-[8px] text-muted-foreground">
-                                                                {formatFileSize(file.size)}
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                </ContextMenuTrigger>
-                                                <ContextMenuContent className="w-44">
-                                                    {file.is_dir ? (
-                                                        <>
-                                                            <ContextMenuItem onSelect={() => handleNavigate(file)}>
-                                                                <FolderOpen className="w-4 h-4 mr-2 text-yellow-400" />
-                                                                打开
-                                                            </ContextMenuItem>
-                                                            <ContextMenuSeparator />
-                                                            <ContextMenuItem onSelect={() => handleDownloadFolder(file)}>
-                                                                <Download className="w-4 h-4 mr-2 text-green-400" />
-                                                                下载文件夹
-                                                            </ContextMenuItem>
-                                                            <ContextMenuSeparator />
-                                                            <ContextMenuItem onSelect={() => handleOpenRenameDialog(file)}>
-                                                                <Edit className="w-4 h-4 mr-2" />
-                                                                重命名
-                                                            </ContextMenuItem>
-                                                            <ContextMenuItem onSelect={() => handleCopyItem(file, 'copy')}>
-                                                                <Copy className="w-4 h-4 mr-2" />
-                                                                复制
-                                                            </ContextMenuItem>
-                                                            <ContextMenuItem onSelect={() => handleCopyItem(file, 'cut')}>
-                                                                <Scissors className="w-4 h-4 mr-2" />
-                                                                剪切
-                                                            </ContextMenuItem>
-                                                            <ContextMenuSeparator />
-                                                            <ContextMenuItem onSelect={() => handleOpenChmodDialog(file)}>
-                                                                <Shield className="w-4 h-4 mr-2 text-orange-400" />
-                                                                修改权限
-                                                            </ContextMenuItem>
-                                                            <ContextMenuItem className="text-red-400" onSelect={() => handleOpenDeleteDialog(file)}>
-                                                                <Trash2 className="w-4 h-4 mr-2" />
-                                                                删除
-                                                            </ContextMenuItem>
-                                                        </>
-                                                    ) : (
-                                                        <>
-                                                            <ContextMenuItem onSelect={() => handleFileDoubleClick(file)}>
-                                                                <File className="w-4 h-4 mr-2" />
-                                                                打开
-                                                            </ContextMenuItem>
-                                                            <ContextMenuItem onSelect={() => {
-                                                                const filePath = currentPath === '/'
-                                                                    ? '/' + file.name
-                                                                    : currentPath + '/' + file.name;
-                                                                setEditorFile({ path: filePath, name: file.name });
-                                                            }}>
-                                                                <FileText className="w-4 h-4 mr-2 text-blue-400" />
-                                                                以文本方式打开
-                                                            </ContextMenuItem>
-                                                            <ContextMenuSeparator />
-                                                            <ContextMenuItem onSelect={() => handleDownloadFile(file)}>
-                                                                <Download className="w-4 h-4 mr-2 text-green-400" />
-                                                                下载
-                                                            </ContextMenuItem>
-                                                            <ContextMenuSeparator />
-                                                            <ContextMenuItem onSelect={() => handleOpenRenameDialog(file)}>
-                                                                <Edit className="w-4 h-4 mr-2" />
-                                                                重命名
-                                                            </ContextMenuItem>
-                                                            <ContextMenuItem onSelect={() => handleCopyItem(file, 'copy')}>
-                                                                <Copy className="w-4 h-4 mr-2" />
-                                                                复制
-                                                            </ContextMenuItem>
-                                                            <ContextMenuItem onSelect={() => handleCopyItem(file, 'cut')}>
-                                                                <Scissors className="w-4 h-4 mr-2" />
-                                                                剪切
-                                                            </ContextMenuItem>
-                                                            <ContextMenuSeparator />
-                                                            <ContextMenuItem onSelect={() => handleOpenChmodDialog(file)}>
-                                                                <Shield className="w-4 h-4 mr-2 text-orange-400" />
-                                                                修改权限
-                                                            </ContextMenuItem>
-                                                            <ContextMenuItem className="text-red-400" onSelect={() => handleOpenDeleteDialog(file)}>
-                                                                <Trash2 className="w-4 h-4 mr-2" />
-                                                                删除
-                                                            </ContextMenuItem>
-                                                        </>
-                                                    )}
-                                                </ContextMenuContent>
-                                            </ContextMenu>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    /* List View */
-                                    <table className="w-full text-xs">
-                                        <thead className="sticky top-0 bg-card border-b border-border/30">
-                                            <tr className="text-muted-foreground text-left">
-                                                <th
-                                                    className="px-2 py-1.5 font-medium cursor-pointer hover:text-foreground select-none"
-                                                    style={{ width: '28%' }}
-                                                    onClick={() => handleSort('name')}
-                                                >
-                                                    <span className="flex items-center gap-1">
-                                                        文件名
-                                                        {sortBy === 'name' && (sortOrder === 'asc' ? <ArrowUpIcon className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
-                                                    </span>
-                                                </th>
-                                                <th
-                                                    className="px-2 py-1.5 font-medium text-right cursor-pointer hover:text-foreground select-none"
-                                                    style={{ width: '12%' }}
-                                                    onClick={() => handleSort('size')}
-                                                >
-                                                    <span className="flex items-center justify-end gap-1">
-                                                        大小
-                                                        {sortBy === 'size' && (sortOrder === 'asc' ? <ArrowUpIcon className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
-                                                    </span>
-                                                </th>
-                                                <th
-                                                    className="px-2 py-1.5 font-medium text-center cursor-pointer hover:text-foreground select-none"
-                                                    style={{ width: '15%' }}
-                                                    onClick={() => handleSort('type')}
-                                                >
-                                                    <span className="flex items-center justify-center gap-1">
-                                                        类型
-                                                        {sortBy === 'type' && (sortOrder === 'asc' ? <ArrowUpIcon className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
-                                                    </span>
-                                                </th>
-                                                <th
-                                                    className="px-2 py-1.5 font-medium text-center select-none"
-                                                    style={{ width: '15%' }}
-                                                >
-                                                    权限
-                                                </th>
-                                                <th
-                                                    className="px-2 py-1.5 font-medium text-right cursor-pointer hover:text-foreground select-none"
-                                                    style={{ width: '25%' }}
-                                                    onClick={() => handleSort('mtime')}
-                                                >
-                                                    <span className="flex items-center justify-end gap-1">
-                                                        修改时间
-                                                        {sortBy === 'mtime' && (sortOrder === 'asc' ? <ArrowUpIcon className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
-                                                    </span>
-                                                </th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
+                                    ) : viewMode === 'grid' ? (
+                                        /* Grid View */
+                                        <div className="p-1 grid grid-cols-6 gap-1" tabIndex={0} onKeyDown={handleFileListKeyDown}>
                                             {sortedFiles.map((file) => (
                                                 <ContextMenu key={file.name}>
                                                     <ContextMenuTrigger asChild>
-                                                        <tr
-                                                            className={"hover:bg-primary/10 cursor-pointer transition-colors" + (selectedFile === file.name ? " bg-primary/20" : "")}
-                                                            onClick={() => setSelectedFile(file.name)}
-                                                            onDoubleClick={() => handleFileDoubleClick(file)}
+                                                        <div
+                                                            className={"flex flex-col items-center p-1.5 rounded cursor-pointer transition-colors hover:bg-primary/10" + (selectedFile === file.name ? " bg-primary/20" : "")}
+                                                            onClick={() => handleFileClick(file)}
+                                                            onDoubleClick={() => {
+                                                                if (!inlineEditingFile) {
+                                                                    handleFileDoubleClick(file);
+                                                                }
+                                                            }}
                                                             onContextMenu={(e) => e.stopPropagation()}
                                                         >
-                                                            <td className="px-2 py-1">
-                                                                <div className="flex items-center gap-2">
-                                                                    {getFileIcon(file.name, file.is_dir)}
-                                                                    <span className={file.is_dir ? "text-yellow-200" : ""}>{file.name}</span>
-                                                                </div>
-                                                            </td>
-                                                            <td className="px-2 py-1 text-right text-muted-foreground">{file.is_dir ? "—" : formatFileSize(file.size)}</td>
-                                                            <td className="px-2 py-1 text-center text-muted-foreground">{file.is_dir ? "文件夹" : file.name.split(".").pop()?.toUpperCase() || "FILE"}</td>
-                                                            <td className="px-2 py-1 text-center font-mono text-muted-foreground">{formatPermission(file.perm, file.is_dir)}</td>
-                                                            <td className="px-2 py-1 text-right text-muted-foreground">{formatDate(file.mtime)}</td>
-                                                        </tr>
+                                                            <div className="w-7 h-7 flex items-center justify-center mb-0.5">
+                                                                {file.is_dir ? (
+                                                                    <Folder className="w-6 h-6 text-yellow-400" />
+                                                                ) : (
+                                                                    <File className="w-6 h-6 text-gray-400" />
+                                                                )}
+                                                            </div>
+                                                            {inlineEditingFile === file.name ? (
+                                                                <input
+                                                                    ref={inlineInputRef}
+                                                                    type="text"
+                                                                    value={inlineEditValue}
+                                                                    onChange={(e) => setInlineEditValue(e.target.value)}
+                                                                    onKeyDown={(e) => {
+                                                                        if (e.key === 'Enter') {
+                                                                            e.preventDefault();
+                                                                            handleInlineRenameSubmit();
+                                                                        } else if (e.key === 'Escape') {
+                                                                            e.preventDefault();
+                                                                            handleInlineRenameCancel();
+                                                                        }
+                                                                        e.stopPropagation();
+                                                                    }}
+                                                                    onBlur={handleInlineRenameSubmit}
+                                                                    onClick={(e) => e.stopPropagation()}
+                                                                    className="w-full px-0.5 py-0 text-[9px] text-center bg-background border border-primary rounded focus:outline-none focus:ring-1 focus:ring-primary"
+                                                                />
+                                                            ) : (
+                                                                <span className={"text-[9px] text-center truncate w-full leading-tight" + (file.is_dir ? " text-yellow-200" : "")}>
+                                                                    {file.name}
+                                                                </span>
+                                                            )}
+                                                            {!file.is_dir && (
+                                                                <span className="text-[8px] text-muted-foreground">
+                                                                    {formatFileSize(file.size)}
+                                                                </span>
+                                                            )}
+                                                        </div>
                                                     </ContextMenuTrigger>
-                                                    <ContextMenuContent className="w-48">
+                                                    <ContextMenuContent className="w-44">
                                                         {file.is_dir ? (
                                                             <>
-                                                                {/* Folder Context Menu */}
                                                                 <ContextMenuItem onSelect={() => handleNavigate(file)}>
                                                                     <FolderOpen className="w-4 h-4 mr-2 text-yellow-400" />
-                                                                    打开文件夹
+                                                                    打开
                                                                 </ContextMenuItem>
                                                                 <ContextMenuSeparator />
                                                                 <ContextMenuItem onSelect={() => handleDownloadFolder(file)}>
-                                                                    <Download className="w-4 h-4 mr-2" />
+                                                                    <Download className="w-4 h-4 mr-2 text-green-400" />
                                                                     下载文件夹
                                                                 </ContextMenuItem>
                                                                 <ContextMenuSeparator />
@@ -1536,13 +1648,6 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                                     <Scissors className="w-4 h-4 mr-2" />
                                                                     剪切
                                                                 </ContextMenuItem>
-                                                                <ContextMenuItem onSelect={() => {
-                                                                    const fullPath = currentPath === '/' ? '/' + file.name : currentPath + '/' + file.name;
-                                                                    navigator.clipboard.writeText(fullPath);
-                                                                }}>
-                                                                    <Clipboard className="w-4 h-4 mr-2" />
-                                                                    复制路径
-                                                                </ContextMenuItem>
                                                                 <ContextMenuSeparator />
                                                                 <ContextMenuItem onSelect={() => handleOpenChmodDialog(file)}>
                                                                     <Shield className="w-4 h-4 mr-2 text-orange-400" />
@@ -1555,28 +1660,15 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                             </>
                                                         ) : (
                                                             <>
-                                                                {/* File Context Menu - Dynamic based on file type */}
-                                                                {(() => {
-                                                                    const fileType = getFileType(file.name);
-                                                                    const menuConfig: Record<string, { label: string; icon: React.ReactNode }> = {
-                                                                        text: { label: '编辑', icon: <FileText className="w-4 h-4 mr-2 text-blue-400" /> },
-                                                                        image: { label: '预览', icon: <Image className="w-4 h-4 mr-2 text-pink-400" /> },
-                                                                        media: { label: '打开', icon: <Film className="w-4 h-4 mr-2 text-purple-400" /> },
-                                                                        unknown: { label: '打开', icon: <File className="w-4 h-4 mr-2 text-gray-400" /> },
-                                                                    };
-                                                                    const config = menuConfig[fileType];
-                                                                    return (
-                                                                        <ContextMenuItem onSelect={() => handleFileDoubleClick(file)}>
-                                                                            {config.icon}
-                                                                            {config.label}
-                                                                        </ContextMenuItem>
-                                                                    );
-                                                                })()}
+                                                                <ContextMenuItem onSelect={() => handleFileDoubleClick(file)}>
+                                                                    <File className="w-4 h-4 mr-2" />
+                                                                    打开
+                                                                </ContextMenuItem>
                                                                 <ContextMenuItem onSelect={() => {
                                                                     const filePath = currentPath === '/'
                                                                         ? '/' + file.name
                                                                         : currentPath + '/' + file.name;
-                                                                    setEditorFile({ path: filePath, name: file.name });
+                                                                    openFileInEditor(filePath, file.name);
                                                                 }}>
                                                                     <FileText className="w-4 h-4 mr-2 text-blue-400" />
                                                                     以文本方式打开
@@ -1584,7 +1676,7 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                                 <ContextMenuSeparator />
                                                                 <ContextMenuItem onSelect={() => handleDownloadFile(file)}>
                                                                     <Download className="w-4 h-4 mr-2 text-green-400" />
-                                                                    下载文件
+                                                                    下载
                                                                 </ContextMenuItem>
                                                                 <ContextMenuSeparator />
                                                                 <ContextMenuItem onSelect={() => handleOpenRenameDialog(file)}>
@@ -1598,13 +1690,6 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                                 <ContextMenuItem onSelect={() => handleCopyItem(file, 'cut')}>
                                                                     <Scissors className="w-4 h-4 mr-2" />
                                                                     剪切
-                                                                </ContextMenuItem>
-                                                                <ContextMenuItem onSelect={() => {
-                                                                    const fullPath = currentPath === '/' ? '/' + file.name : currentPath + '/' + file.name;
-                                                                    navigator.clipboard.writeText(fullPath);
-                                                                }}>
-                                                                    <Clipboard className="w-4 h-4 mr-2" />
-                                                                    复制路径
                                                                 </ContextMenuItem>
                                                                 <ContextMenuSeparator />
                                                                 <ContextMenuItem onSelect={() => handleOpenChmodDialog(file)}>
@@ -1620,38 +1705,252 @@ export function FileManager({ connectionId }: FileManagerProps) {
                                                     </ContextMenuContent>
                                                 </ContextMenu>
                                             ))}
-                                        </tbody>
-                                    </table>
-                                )}
-                            </ScrollArea>
-                        </div>
-                    </ContextMenuTrigger>
-                    {/* Empty Area Context Menu */}
-                    <ContextMenuContent className="w-44">
-                        <ContextMenuItem onSelect={handleRefresh}>
-                            <RefreshCw className="w-4 h-4 mr-2" />
-                            刷新
-                        </ContextMenuItem>
-                        <ContextMenuSeparator />
-                        <ContextMenuItem onSelect={() => handleOpenNewItemDialog('folder')}>
-                            <FolderPlus className="w-4 h-4 mr-2 text-yellow-400" />
-                            新建文件夹
-                        </ContextMenuItem>
-                        <ContextMenuItem onSelect={() => handleOpenNewItemDialog('file')}>
-                            <FilePlus className="w-4 h-4 mr-2 text-blue-400" />
-                            新建文件
-                        </ContextMenuItem>
-                        <ContextMenuSeparator />
-                        <ContextMenuItem onSelect={handleUploadFile}>
-                            <Upload className="w-4 h-4 mr-2 text-green-400" />
-                            上传文件
-                        </ContextMenuItem>
-                        <ContextMenuItem onSelect={handlePaste} disabled={!clipboardItem}>
-                            <Clipboard className="w-4 h-4 mr-2" />
-                            粘贴 {clipboardItem ? `(${clipboardItem.name})` : ''}
-                        </ContextMenuItem>
-                    </ContextMenuContent>
-                </ContextMenu>
+                                        </div>
+                                    ) : (
+                                        /* List View */
+                                        <table className="w-full text-xs">
+                                            <thead className="sticky top-0 bg-card border-b border-border/30">
+                                                <tr className="text-muted-foreground text-left">
+                                                    <th
+                                                        className="px-2 py-1.5 font-medium cursor-pointer hover:text-foreground select-none"
+                                                        style={{ width: '28%' }}
+                                                        onClick={() => handleSort('name')}
+                                                    >
+                                                        <span className="flex items-center gap-1">
+                                                            文件名
+                                                            {sortBy === 'name' && (sortOrder === 'asc' ? <ArrowUpIcon className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
+                                                        </span>
+                                                    </th>
+                                                    <th
+                                                        className="px-2 py-1.5 font-medium text-right cursor-pointer hover:text-foreground select-none"
+                                                        style={{ width: '12%' }}
+                                                        onClick={() => handleSort('size')}
+                                                    >
+                                                        <span className="flex items-center justify-end gap-1">
+                                                            大小
+                                                            {sortBy === 'size' && (sortOrder === 'asc' ? <ArrowUpIcon className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
+                                                        </span>
+                                                    </th>
+                                                    <th
+                                                        className="px-2 py-1.5 font-medium text-center cursor-pointer hover:text-foreground select-none"
+                                                        style={{ width: '15%' }}
+                                                        onClick={() => handleSort('type')}
+                                                    >
+                                                        <span className="flex items-center justify-center gap-1">
+                                                            类型
+                                                            {sortBy === 'type' && (sortOrder === 'asc' ? <ArrowUpIcon className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
+                                                        </span>
+                                                    </th>
+                                                    <th
+                                                        className="px-2 py-1.5 font-medium text-center select-none"
+                                                        style={{ width: '15%' }}
+                                                    >
+                                                        权限
+                                                    </th>
+                                                    <th
+                                                        className="px-2 py-1.5 font-medium text-right cursor-pointer hover:text-foreground select-none"
+                                                        style={{ width: '25%' }}
+                                                        onClick={() => handleSort('mtime')}
+                                                    >
+                                                        <span className="flex items-center justify-end gap-1">
+                                                            修改时间
+                                                            {sortBy === 'mtime' && (sortOrder === 'asc' ? <ArrowUpIcon className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
+                                                        </span>
+                                                    </th>
+                                                </tr>
+                                            </thead>
+                                            <tbody tabIndex={0} onKeyDown={handleFileListKeyDown}>
+                                                {sortedFiles.map((file) => (
+                                                    <ContextMenu key={file.name}>
+                                                        <ContextMenuTrigger asChild>
+                                                            <tr
+                                                                className={"hover:bg-primary/10 cursor-pointer transition-colors" + (selectedFile === file.name ? " bg-primary/20" : "")}
+                                                                onClick={() => handleFileClick(file)}
+                                                                onDoubleClick={() => {
+                                                                    // Only handle double click if not in inline edit mode
+                                                                    if (!inlineEditingFile) {
+                                                                        handleFileDoubleClick(file);
+                                                                    }
+                                                                }}
+                                                                onContextMenu={(e) => e.stopPropagation()}
+                                                            >
+                                                                <td className="px-2 py-1">
+                                                                    <div className="flex items-center gap-2">
+                                                                        {getFileIcon(file.name, file.is_dir)}
+                                                                        {inlineEditingFile === file.name ? (
+                                                                            <input
+                                                                                ref={inlineInputRef}
+                                                                                type="text"
+                                                                                value={inlineEditValue}
+                                                                                onChange={(e) => setInlineEditValue(e.target.value)}
+                                                                                onKeyDown={(e) => {
+                                                                                    if (e.key === 'Enter') {
+                                                                                        e.preventDefault();
+                                                                                        handleInlineRenameSubmit();
+                                                                                    } else if (e.key === 'Escape') {
+                                                                                        e.preventDefault();
+                                                                                        handleInlineRenameCancel();
+                                                                                    }
+                                                                                    e.stopPropagation();
+                                                                                }}
+                                                                                onBlur={handleInlineRenameSubmit}
+                                                                                onClick={(e) => e.stopPropagation()}
+                                                                                className="flex-1 px-1 py-0 text-sm bg-background border border-primary rounded focus:outline-none focus:ring-1 focus:ring-primary"
+                                                                            />
+                                                                        ) : (
+                                                                            <span className={file.is_dir ? "text-yellow-200" : ""}>{file.name}</span>
+                                                                        )}
+                                                                    </div>
+                                                                </td>
+                                                                <td className="px-2 py-1 text-right text-muted-foreground">{file.is_dir ? "—" : formatFileSize(file.size)}</td>
+                                                                <td className="px-2 py-1 text-center text-muted-foreground">{file.is_dir ? "文件夹" : file.name.split(".").pop()?.toUpperCase() || "FILE"}</td>
+                                                                <td className="px-2 py-1 text-center font-mono text-muted-foreground">{formatPermission(file.perm, file.is_dir)}</td>
+                                                                <td className="px-2 py-1 text-right text-muted-foreground">{formatDate(file.mtime)}</td>
+                                                            </tr>
+                                                        </ContextMenuTrigger>
+                                                        <ContextMenuContent className="w-48">
+                                                            {file.is_dir ? (
+                                                                <>
+                                                                    {/* Folder Context Menu */}
+                                                                    <ContextMenuItem onSelect={() => handleNavigate(file)}>
+                                                                        <FolderOpen className="w-4 h-4 mr-2 text-yellow-400" />
+                                                                        打开文件夹
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuSeparator />
+                                                                    <ContextMenuItem onSelect={() => handleDownloadFolder(file)}>
+                                                                        <Download className="w-4 h-4 mr-2" />
+                                                                        下载文件夹
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuSeparator />
+                                                                    <ContextMenuItem onSelect={() => handleOpenRenameDialog(file)}>
+                                                                        <Edit className="w-4 h-4 mr-2" />
+                                                                        重命名
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuItem onSelect={() => handleCopyItem(file, 'copy')}>
+                                                                        <Copy className="w-4 h-4 mr-2" />
+                                                                        复制
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuItem onSelect={() => handleCopyItem(file, 'cut')}>
+                                                                        <Scissors className="w-4 h-4 mr-2" />
+                                                                        剪切
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuItem onSelect={() => {
+                                                                        const fullPath = currentPath === '/' ? '/' + file.name : currentPath + '/' + file.name;
+                                                                        navigator.clipboard.writeText(fullPath);
+                                                                    }}>
+                                                                        <Clipboard className="w-4 h-4 mr-2" />
+                                                                        复制路径
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuSeparator />
+                                                                    <ContextMenuItem onSelect={() => handleOpenChmodDialog(file)}>
+                                                                        <Shield className="w-4 h-4 mr-2 text-orange-400" />
+                                                                        修改权限
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuItem className="text-red-400" onSelect={() => handleOpenDeleteDialog(file)}>
+                                                                        <Trash2 className="w-4 h-4 mr-2" />
+                                                                        删除
+                                                                    </ContextMenuItem>
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    {/* File Context Menu - Dynamic based on file type */}
+                                                                    {(() => {
+                                                                        const fileType = getFileType(file.name);
+                                                                        const menuConfig: Record<string, { label: string; icon: React.ReactNode }> = {
+                                                                            text: { label: '编辑', icon: <FileText className="w-4 h-4 mr-2 text-blue-400" /> },
+                                                                            image: { label: '预览', icon: <Image className="w-4 h-4 mr-2 text-pink-400" /> },
+                                                                            media: { label: '打开', icon: <Film className="w-4 h-4 mr-2 text-purple-400" /> },
+                                                                            unknown: { label: '打开', icon: <File className="w-4 h-4 mr-2 text-gray-400" /> },
+                                                                        };
+                                                                        const config = menuConfig[fileType];
+                                                                        return (
+                                                                            <ContextMenuItem onSelect={() => handleFileDoubleClick(file)}>
+                                                                                {config.icon}
+                                                                                {config.label}
+                                                                            </ContextMenuItem>
+                                                                        );
+                                                                    })()}
+                                                                    <ContextMenuItem onSelect={() => {
+                                                                        const filePath = currentPath === '/'
+                                                                            ? '/' + file.name
+                                                                            : currentPath + '/' + file.name;
+                                                                        openFileInEditor(filePath, file.name);
+                                                                    }}>
+                                                                        <FileText className="w-4 h-4 mr-2 text-blue-400" />
+                                                                        以文本方式打开
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuSeparator />
+                                                                    <ContextMenuItem onSelect={() => handleDownloadFile(file)}>
+                                                                        <Download className="w-4 h-4 mr-2 text-green-400" />
+                                                                        下载文件
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuSeparator />
+                                                                    <ContextMenuItem onSelect={() => handleOpenRenameDialog(file)}>
+                                                                        <Edit className="w-4 h-4 mr-2" />
+                                                                        重命名
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuItem onSelect={() => handleCopyItem(file, 'copy')}>
+                                                                        <Copy className="w-4 h-4 mr-2" />
+                                                                        复制
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuItem onSelect={() => handleCopyItem(file, 'cut')}>
+                                                                        <Scissors className="w-4 h-4 mr-2" />
+                                                                        剪切
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuItem onSelect={() => {
+                                                                        const fullPath = currentPath === '/' ? '/' + file.name : currentPath + '/' + file.name;
+                                                                        navigator.clipboard.writeText(fullPath);
+                                                                    }}>
+                                                                        <Clipboard className="w-4 h-4 mr-2" />
+                                                                        复制路径
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuSeparator />
+                                                                    <ContextMenuItem onSelect={() => handleOpenChmodDialog(file)}>
+                                                                        <Shield className="w-4 h-4 mr-2 text-orange-400" />
+                                                                        修改权限
+                                                                    </ContextMenuItem>
+                                                                    <ContextMenuItem className="text-red-400" onSelect={() => handleOpenDeleteDialog(file)}>
+                                                                        <Trash2 className="w-4 h-4 mr-2" />
+                                                                        删除
+                                                                    </ContextMenuItem>
+                                                                </>
+                                                            )}
+                                                        </ContextMenuContent>
+                                                    </ContextMenu>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </ScrollArea>
+                            </div>
+                        </ContextMenuTrigger>
+                        {/* Empty Area Context Menu */}
+                        <ContextMenuContent className="w-44">
+                            <ContextMenuItem onSelect={handleRefresh}>
+                                <RefreshCw className="w-4 h-4 mr-2" />
+                                刷新
+                            </ContextMenuItem>
+                            <ContextMenuSeparator />
+                            <ContextMenuItem onSelect={() => handleOpenNewItemDialog('folder')}>
+                                <FolderPlus className="w-4 h-4 mr-2 text-yellow-400" />
+                                新建文件夹
+                            </ContextMenuItem>
+                            <ContextMenuItem onSelect={() => handleOpenNewItemDialog('file')}>
+                                <FilePlus className="w-4 h-4 mr-2 text-blue-400" />
+                                新建文件
+                            </ContextMenuItem>
+                            <ContextMenuSeparator />
+                            <ContextMenuItem onSelect={handleUploadFile}>
+                                <Upload className="w-4 h-4 mr-2 text-green-400" />
+                                上传文件
+                            </ContextMenuItem>
+                            <ContextMenuItem onSelect={handlePaste} disabled={!clipboardItem}>
+                                <Clipboard className="w-4 h-4 mr-2" />
+                                粘贴 {clipboardItem ? `(${clipboardItem.name})` : ''}
+                            </ContextMenuItem>
+                        </ContextMenuContent>
+                    </ContextMenu>
+                </>
             </div>
 
             <div className="px-2 py-1 border-t border-border/30 text-[10px] text-muted-foreground flex items-center justify-between flex-shrink-0 bg-secondary/10">
@@ -1915,22 +2214,6 @@ export function FileManager({ connectionId }: FileManagerProps) {
                 isExpanded={transferPanelExpanded}
                 onToggleExpand={() => setTransferPanelExpanded(prev => !prev)}
             />
-
-            {/* File Editor (Monaco) */}
-            {editorFile && connectionId && (
-                <FileEditor
-                    connectionId={connectionId}
-                    filePath={editorFile.path}
-                    fileName={editorFile.name}
-                    onClose={() => setEditorFile(null)}
-                    onSave={() => {
-                        // Invalidate cache and refresh file list after save
-                        const { invalidatePath } = useDirectoryCacheStore.getState();
-                        invalidatePath(connectionId, currentPath);
-                        loadDirectory(currentPath, true);
-                    }}
-                />
-            )}
 
             {/* Image Preview */}
             {previewImage && connectionId && (

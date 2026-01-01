@@ -10,6 +10,7 @@ use std::time::Duration;
 use russh::*;
 use tauri::{AppHandle, Emitter};
 use log::{info, error, debug};
+use tokio_util::sync::CancellationToken;
 
 /// Stored credentials for reconnection (also used by other modules)
 #[derive(Clone)]
@@ -24,12 +25,14 @@ pub struct StoredCredentials {
 
 pub struct AppState {
     pub credentials: Mutex<HashMap<String, StoredCredentials>>,
+    pub monitoring_tokens: Mutex<HashMap<String, CancellationToken>>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
             credentials: Mutex::new(HashMap::new()),
+            monitoring_tokens: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -37,17 +40,33 @@ impl Default for AppState {
 #[derive(Clone, serde::Serialize)]
 struct StatsPayload {
     id: String,
-    cpu: f32,           // CPU usage percent
-    ram_total: u64,     // Total RAM in KB
-    ram_used: u64,      // Used RAM in KB
-    net_rx: u64,        // Network received bytes
-    net_tx: u64,        // Network transmitted bytes
-    disk_total: u64,    // Disk total in KB
-    disk_used: u64,     // Disk used in KB
-    load_1: f32,        // Load average 1 min
-    load_5: f32,        // Load average 5 min
-    load_15: f32,       // Load average 15 min
-    os_name: String,    // OS name and version (e.g., "Ubuntu 22.04")
+    cpu: f32,             // CPU usage percent
+    ram_total: u64,       // Total RAM in KB
+    ram_used: u64,        // Used RAM in KB
+    net_rx: u64,          // Network received bytes
+    net_tx: u64,          // Network transmitted bytes
+    disk_total: u64,      // Disk total in KB
+    disk_used: u64,       // Disk used in KB
+    load_1: f32,          // Load average 1 min
+    load_5: f32,          // Load average 5 min
+    load_15: f32,         // Load average 15 min
+    os_name: String,      // OS name and version (e.g., "Ubuntu 22.04")
+    cpu_model: String,    // CPU model name
+    cpu_cores: u32,       // Number of CPU cores
+    // Extended monitoring data
+    uptime_seconds: u64,  // Server uptime in seconds
+    swap_total: u64,      // Total swap in KB
+    swap_used: u64,       // Used swap in KB
+    processes: u32,       // Number of running processes
+    users: u32,           // Number of logged in users
+    kernel_version: String, // Kernel version
+    tcp_connections: u32, // Number of TCP connections
+    disk_read_bytes: u64, // Disk read bytes per second
+    disk_write_bytes: u64, // Disk write bytes per second
+    inode_total: u64,     // Total inodes on root filesystem
+    inode_used: u64,      // Used inodes on root filesystem
+    zombie_processes: u32, // Number of zombie processes
+    ssh_connections: u32, // Number of SSH connections
 }
 
 /// Parse CPU usage from /proc/stat output
@@ -180,6 +199,181 @@ fn parse_os_release(output: &str) -> String {
     "Unknown".to_string()
 }
 
+/// Parse CPU info from /proc/cpuinfo output
+fn parse_cpu_info(output: &str) -> (String, u32) {
+    let mut model_name = String::new();
+    let mut core_count: u32 = 0;
+    
+    for line in output.lines() {
+        if line.starts_with("model name") {
+            if model_name.is_empty() {
+                if let Some(value) = line.split(':').nth(1) {
+                    model_name = value.trim().to_string();
+                }
+            }
+        } else if line.starts_with("processor") {
+            core_count += 1;
+        }
+    }
+    
+    // Clean up model name (remove extra spaces)
+    model_name = model_name.split_whitespace().collect::<Vec<_>>().join(" ");
+    
+    (model_name, core_count)
+}
+
+/// Parse uptime from /proc/uptime output
+fn parse_uptime(output: &str) -> u64 {
+    let parts: Vec<&str> = output.split_whitespace().collect();
+    if !parts.is_empty() {
+        parts[0].parse::<f64>().unwrap_or(0.0) as u64
+    } else {
+        0
+    }
+}
+
+/// Parse swap info from /proc/meminfo output
+fn parse_swap_info(output: &str) -> (u64, u64) {
+    let mut swap_total: u64 = 0;
+    let mut swap_free: u64 = 0;
+    
+    for line in output.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let value: u64 = parts[1].parse().unwrap_or(0);
+            match parts[0] {
+                "SwapTotal:" => swap_total = value,
+                "SwapFree:" => swap_free = value,
+                _ => {}
+            }
+        }
+    }
+    
+    let swap_used = swap_total.saturating_sub(swap_free);
+    (swap_total, swap_used)
+}
+
+/// Parse process count from /proc/loadavg output (4th field: running/total)
+fn parse_process_count(output: &str) -> u32 {
+    let parts: Vec<&str> = output.split_whitespace().collect();
+    if parts.len() >= 4 {
+        // Format: "running/total"
+        if let Some(total) = parts[3].split('/').nth(1) {
+            return total.parse().unwrap_or(0);
+        }
+    }
+    0
+}
+
+/// Parse user count from 'who' command output
+fn parse_user_count(output: &str) -> u32 {
+    output.lines().filter(|line| !line.trim().is_empty()).count() as u32
+}
+
+/// Parse kernel version from 'uname -r' output
+fn parse_kernel_version(output: &str) -> String {
+    output.trim().to_string()
+}
+
+/// Parse TCP connection count from /proc/net/tcp output
+/// Only counts ESTABLISHED connections (state = 01)
+fn parse_tcp_connections(output: &str) -> u32 {
+    // /proc/net/tcp format: sl local_address rem_address st ...
+    // st (state) = 01 means ESTABLISHED
+    // Skip header line and count only ESTABLISHED connections
+    output.lines().skip(1).filter(|line| {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        // State is the 4th field (index 3)
+        if parts.len() >= 4 {
+            parts[3] == "01" // 01 = ESTABLISHED
+        } else {
+            false
+        }
+    }).count() as u32
+}
+
+/// Parse SSH connection count from /proc/net/tcp output
+/// Counts ESTABLISHED connections to port 22 (0016 in hex)
+fn parse_ssh_connections(output: &str) -> u32 {
+    // /proc/net/tcp format: sl local_address rem_address st ...
+    // local_address format: IP:PORT where PORT is hex
+    // Port 22 = 0016 in hex
+    output.lines().skip(1).filter(|line| {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 4 {
+            let local_addr = parts[1];
+            let state = parts[3];
+            // Check if local port is 22 (0016) and state is ESTABLISHED (01)
+            local_addr.ends_with(":0016") && state == "01"
+        } else {
+            false
+        }
+    }).count() as u32
+}
+
+/// Parse disk IO stats from /proc/diskstats output
+fn parse_disk_io(prev_stats: &Option<(u64, u64)>, output: &str) -> ((u64, u64), Option<(u64, u64)>) {
+    let mut total_read: u64 = 0;
+    let mut total_write: u64 = 0;
+    
+    for line in output.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        // diskstats format: major minor name rd_ios rd_merges rd_sectors rd_ticks wr_ios wr_merges wr_sectors ...
+        if parts.len() >= 10 {
+            let device_name = parts[2];
+            // Only count main devices (sda, vda, nvme0n1), not partitions
+            if device_name.starts_with("sd") && device_name.len() == 3 
+               || device_name.starts_with("vd") && device_name.len() == 3
+               || device_name.starts_with("nvme") && device_name.ends_with("n1") && !device_name.contains("p") {
+                let rd_sectors: u64 = parts[5].parse().unwrap_or(0);
+                let wr_sectors: u64 = parts[9].parse().unwrap_or(0);
+                total_read += rd_sectors * 512; // sectors to bytes
+                total_write += wr_sectors * 512;
+            }
+        }
+    }
+    
+    if let Some((prev_read, prev_write)) = prev_stats {
+        let read_rate = total_read.saturating_sub(*prev_read) / 2; // per second (2s interval)
+        let write_rate = total_write.saturating_sub(*prev_write) / 2;
+        ((read_rate, write_rate), Some((total_read, total_write)))
+    } else {
+        ((0, 0), Some((total_read, total_write)))
+    }
+}
+
+/// Parse inode usage from 'df -i /' output
+fn parse_inode_usage(output: &str) -> (u64, u64) {
+    for line in output.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 4 {
+            if let Some(mount) = parts.last() {
+                if *mount == "/" {
+                    let total: u64 = parts[1].parse().unwrap_or(0);
+                    let used: u64 = parts[2].parse().unwrap_or(0);
+                    return (total, used);
+                }
+            }
+        }
+    }
+    (0, 0)
+}
+
+/// Parse zombie process count from ps output
+fn parse_zombie_count(output: &str) -> u32 {
+    // ps aux output: second-to-last column is STAT, zombie shows as 'Z' or 'Z+'
+    output.lines().skip(1).filter(|line| {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 8 {
+            // STAT is usually the 8th column (index 7)
+            let stat = parts[7];
+            stat.starts_with('Z')
+        } else {
+            false
+        }
+    }).count() as u32
+}
+
 /// SSH Client handler for russh monitoring
 struct MonitoringClient {
     id: String,
@@ -270,6 +464,24 @@ pub async fn start_monitoring(
     russh_state: tauri::State<'_, super::ssh_russh::RusshAppState>,
     id: String,
 ) -> Result<(), String> {
+    // Cancel any existing monitoring task for this ID
+    {
+        let mut tokens = state.monitoring_tokens.lock().unwrap();
+        if let Some(old_token) = tokens.remove(&id) {
+            info!("[SSH-Monitor:{}] Cancelling previous monitoring task", id);
+            old_token.cancel();
+        }
+        // Create new cancellation token
+        let new_token = CancellationToken::new();
+        tokens.insert(id.clone(), new_token.clone());
+    }
+    
+    // Get the token for this monitoring session
+    let cancel_token = {
+        let tokens = state.monitoring_tokens.lock().unwrap();
+        tokens.get(&id).cloned().unwrap()
+    };
+    
     // Get credentials from russh state first, then fallback to legacy state
     let creds = {
         let russh_creds = russh_state.credentials.lock().unwrap();
@@ -346,13 +558,37 @@ pub async fn start_monitoring(
         // Monitoring loop
         let mut prev_cpu_stats: Option<(u64, u64)> = None;
         let mut prev_net_stats: Option<(u64, u64)> = None;
+        let mut prev_disk_io_stats: Option<(u64, u64)> = None;
         let mut os_name = String::new();
+        let mut cpu_model = String::new();
+        let mut cpu_cores: u32 = 0;
+        let mut kernel_version = String::new();
         
         loop {
-            // Get OS name once
+            // Check if cancelled
+            if cancel_token.is_cancelled() {
+                info!("[SSH-Monitor:{}] Monitoring cancelled, stopping", id_clone);
+                return;
+            }
+            
+            // Get static info once (OS name, CPU info, kernel version)
             if os_name.is_empty() {
                 if let Ok(output) = exec_command_on_channel(&mut handle, "cat /etc/os-release").await {
                     os_name = parse_os_release(&output);
+                }
+            }
+            
+            if cpu_model.is_empty() {
+                if let Ok(output) = exec_command_on_channel(&mut handle, "cat /proc/cpuinfo").await {
+                    let (model, cores) = parse_cpu_info(&output);
+                    cpu_model = model;
+                    cpu_cores = cores;
+                }
+            }
+            
+            if kernel_version.is_empty() {
+                if let Ok(output) = exec_command_on_channel(&mut handle, "uname -r").await {
+                    kernel_version = parse_kernel_version(&output);
                 }
             }
             
@@ -365,11 +601,13 @@ pub async fn start_monitoring(
                 0.0
             };
             
-            // Get memory stats
-            let (ram_total, ram_used) = if let Ok(output) = exec_command_on_channel(&mut handle, "cat /proc/meminfo").await {
-                parse_memory_info(&output)
+            // Get memory and swap stats (from same file)
+            let (ram_total, ram_used, swap_total, swap_used) = if let Ok(output) = exec_command_on_channel(&mut handle, "cat /proc/meminfo").await {
+                let (rt, ru) = parse_memory_info(&output);
+                let (st, su) = parse_swap_info(&output);
+                (rt, ru, st, su)
             } else {
-                (0, 0)
+                (0, 0, 0, 0)
             };
             
             // Get network stats
@@ -393,11 +631,57 @@ pub async fn start_monitoring(
                 (0, 0)
             };
             
-            // Get load average
-            let (load_1, load_5, load_15) = if let Ok(output) = exec_command_on_channel(&mut handle, "cat /proc/loadavg").await {
-                parse_load_average(&output)
+            // Get load average and process count (from same file)
+            let (load_1, load_5, load_15, processes) = if let Ok(output) = exec_command_on_channel(&mut handle, "cat /proc/loadavg").await {
+                let (l1, l5, l15) = parse_load_average(&output);
+                let procs = parse_process_count(&output);
+                (l1, l5, l15, procs)
             } else {
-                (0.0, 0.0, 0.0)
+                (0.0, 0.0, 0.0, 0)
+            };
+            
+            // Get uptime
+            let uptime_seconds = if let Ok(output) = exec_command_on_channel(&mut handle, "cat /proc/uptime").await {
+                parse_uptime(&output)
+            } else {
+                0
+            };
+            
+            // Get user count
+            let users = if let Ok(output) = exec_command_on_channel(&mut handle, "who").await {
+                parse_user_count(&output)
+            } else {
+                0
+            };
+            
+            // Get TCP connections and SSH connections (from same data)
+            let (tcp_connections, ssh_connections) = if let Ok(output) = exec_command_on_channel(&mut handle, "cat /proc/net/tcp").await {
+                (parse_tcp_connections(&output), parse_ssh_connections(&output))
+            } else {
+                (0, 0)
+            };
+            
+            // Get disk IO
+            let (disk_read_bytes, disk_write_bytes) = if let Ok(output) = exec_command_on_channel(&mut handle, "cat /proc/diskstats").await {
+                let ((read, write), new_stats) = parse_disk_io(&prev_disk_io_stats, &output);
+                prev_disk_io_stats = new_stats;
+                (read, write)
+            } else {
+                (0, 0)
+            };
+            
+            // Get inode usage
+            let (inode_total, inode_used) = if let Ok(output) = exec_command_on_channel(&mut handle, "df -i /").await {
+                parse_inode_usage(&output)
+            } else {
+                (0, 0)
+            };
+            
+            // Get zombie process count
+            let zombie_processes = if let Ok(output) = exec_command_on_channel(&mut handle, "ps aux").await {
+                parse_zombie_count(&output)
+            } else {
+                0
             };
             
             // Emit stats
@@ -414,13 +698,48 @@ pub async fn start_monitoring(
                 load_5,
                 load_15,
                 os_name: os_name.clone(),
+                cpu_model: cpu_model.clone(),
+                cpu_cores,
+                uptime_seconds,
+                swap_total,
+                swap_used,
+                processes,
+                users,
+                kernel_version: kernel_version.clone(),
+                tcp_connections,
+                disk_read_bytes,
+                disk_write_bytes,
+                inode_total,
+                inode_used,
+                zombie_processes,
+                ssh_connections,
             });
             
-            // Wait 2 seconds before next collection
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            // Wait 2 seconds before next collection, but check for cancellation
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                _ = cancel_token.cancelled() => {
+                    info!("[SSH-Monitor:{}] Monitoring cancelled during sleep, stopping", id_clone);
+                    return;
+                }
+            }
         }
     });
 
+    Ok(())
+}
+
+/// Stop monitoring for a specific connection
+#[tauri::command]
+pub async fn stop_monitoring(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let mut tokens = state.monitoring_tokens.lock().unwrap();
+    if let Some(token) = tokens.remove(&id) {
+        info!("[SSH-Monitor:{}] Stopping monitoring", id);
+        token.cancel();
+    }
     Ok(())
 }
 

@@ -3,6 +3,12 @@ import Editor, { OnMount } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
 import { X, Save, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { editor } from "monaco-editor";
 
 interface FileEditorProps {
@@ -11,6 +17,9 @@ interface FileEditorProps {
     fileName: string;
     onClose: () => void;
     onSave?: () => void;  // Called after successful save
+    onHasChangesChange?: (hasChanges: boolean) => void;  // Called when unsaved changes state changes
+    mode?: 'panel' | 'modal';  // Display mode: 'panel' = embedded, 'modal' = fullscreen popup
+    isActive?: boolean;  // Whether this editor tab is currently active (for focus management)
 }
 
 // Map file extensions to Monaco language IDs
@@ -77,7 +86,7 @@ function getLanguage(fileName: string): string {
     return languageMap[ext] || "plaintext";
 }
 
-export function FileEditor({ connectionId, filePath, fileName, onClose, onSave }: FileEditorProps) {
+export function FileEditor({ connectionId, filePath, fileName, onClose, onSave, onHasChangesChange, mode = 'panel', isActive = true }: FileEditorProps) {
     const [content, setContent] = useState<string>("");
     const [originalContent, setOriginalContent] = useState<string>("");
     const [loading, setLoading] = useState(true);
@@ -108,6 +117,15 @@ export function FileEditor({ connectionId, filePath, fileName, onClose, onSave }
         loadFile();
     }, [connectionId, filePath]);
 
+    // Notify parent when hasChanges state changes
+    // Use ref to avoid infinite loop from callback prop changes
+    const onHasChangesChangeRef = useRef(onHasChangesChange);
+    onHasChangesChangeRef.current = onHasChangesChange;
+
+    useEffect(() => {
+        onHasChangesChangeRef.current?.(hasChanges);
+    }, [hasChanges]);
+
     // Save file
     const handleSave = useCallback(async () => {
         try {
@@ -133,29 +151,154 @@ export function FileEditor({ connectionId, filePath, fileName, onClose, onSave }
     saveRef.current = handleSave;
 
     // Handle Monaco editor mount
-    const handleEditorMount: OnMount = (editor, monaco) => {
+    const handleEditorMount: OnMount = (editor) => {
         editorRef.current = editor;
-
-        // Add Ctrl/Cmd+S keybinding using monaco's KeyMod and KeyCode
-        editor.addCommand(
-            monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-            () => {
-                saveRef.current();
-            }
-        );
+        // Note: We don't use addCommand here because it conflicts with multiple editor instances.
+        // Instead, we use a document-level keydown listener that checks isActive.
     };
 
-    // Handle close with unsaved changes warning
-    const handleClose = () => {
-        if (hasChanges) {
-            if (confirm("文件有未保存的更改，确定要关闭吗？")) {
-                onClose();
+    // Global keyboard shortcut handler (Cmd/Ctrl+S to save)
+    // Only responds when this editor is active
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+                if (isActive) {
+                    e.preventDefault();
+                    saveRef.current();
+                }
             }
-        } else {
-            onClose();
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [isActive]);
+
+    // Focus editor when tab becomes active
+    useEffect(() => {
+        if (isActive && editorRef.current) {
+            // Small delay to ensure DOM is ready
+            setTimeout(() => {
+                editorRef.current?.focus();
+            }, 50);
         }
+    }, [isActive]);
+
+    // Handle close - just call onClose, parent handles unsaved changes confirmation
+    const handleClose = () => {
+        onClose();
     };
 
+    // Panel mode: embedded in parent container (replaces file list)
+    if (mode === 'panel') {
+        return (
+            <TooltipProvider delayDuration={300}>
+            <div className="h-full w-full flex flex-col bg-card">
+                {/* Compact Header for panel mode */}
+                <div className="flex items-center justify-between px-2 py-1.5 border-b border-border bg-muted/30">
+                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <span className="font-medium text-xs truncate cursor-default hover:text-primary transition-colors">{fileName}</span>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" className="text-xs max-w-md">
+                                <p className="font-mono">{filePath}</p>
+                            </TooltipContent>
+                        </Tooltip>
+                        {hasChanges && (
+                            <span className="text-[10px] text-orange-500 flex-shrink-0" title="未保存">●</span>
+                        )}
+                    </div>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                        <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={handleSave}
+                            disabled={saving || !hasChanges}
+                            className="h-6 px-1.5 text-xs"
+                        >
+                            {saving ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                                <>
+                                    <Save className="w-3.5 h-3.5 mr-1" />
+                                    保存
+                                </>
+                            )}
+                        </Button>
+                        <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={handleClose}
+                            className="h-6 w-6 p-0"
+                            title="关闭编辑器"
+                        >
+                            <X className="w-3.5 h-3.5" />
+                        </Button>
+                    </div>
+                </div>
+
+                {/* Editor */}
+                <div className="flex-1 overflow-hidden">
+                    {loading ? (
+                        <div className="flex items-center justify-center h-full">
+                            <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+                            <span className="ml-2 text-muted-foreground">加载中...</span>
+                        </div>
+                    ) : error ? (
+                        <div className="flex items-center justify-center h-full text-destructive">
+                            <span>加载失败: {error}</span>
+                        </div>
+                    ) : (
+                        <Editor
+                            height="100%"
+                            language={getLanguage(fileName)}
+                            value={content}
+                            onChange={(value) => setContent(value || "")}
+                            onMount={handleEditorMount}
+                            theme="vs-dark"
+                            loading={
+                                <div className="flex items-center justify-center h-full">
+                                    <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+                                    <span className="ml-2 text-muted-foreground">编辑器加载中...</span>
+                                </div>
+                            }
+                            options={{
+                                fontSize: 13,
+                                minimap: { enabled: false },  // Disable minimap in panel mode for more space
+                                scrollBeyondLastLine: false,
+                                wordWrap: "on",
+                                automaticLayout: true,
+                                tabSize: 4,
+                                insertSpaces: true,
+                                padding: { top: 8, bottom: 8 },
+                                scrollbar: {
+                                    horizontal: 'auto',
+                                    vertical: 'auto',
+                                    useShadows: false,
+                                    horizontalScrollbarSize: 8,
+                                    verticalScrollbarSize: 8,
+                                },
+                                fontLigatures: false,
+                                disableMonospaceOptimizations: true,
+                                renderLineHighlight: 'all',
+                                stopRenderingLineAfter: -1,
+                            }}
+                        />
+                    )}
+                </div>
+
+                {/* Status bar for errors */}
+                {error && (
+                    <div className="px-2 py-1 bg-destructive/10 border-t border-destructive/20 text-xs text-destructive">
+                        {error}
+                    </div>
+                )}
+            </div>
+            </TooltipProvider>
+        );
+    }
+
+    // Modal mode: fullscreen popup (original style)
     return (
         <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
             <div className="bg-card border border-border rounded-lg shadow-xl w-full max-w-6xl h-[90vh] flex flex-col overflow-hidden">
@@ -239,7 +382,6 @@ export function FileEditor({ connectionId, filePath, fileName, onClose, onSave }
                                     horizontalScrollbarSize: 10,
                                     verticalScrollbarSize: 10,
                                 },
-                                // Fix selection highlight rendering
                                 fontLigatures: false,
                                 disableMonospaceOptimizations: true,
                                 renderLineHighlight: 'all',

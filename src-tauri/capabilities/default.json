@@ -4,12 +4,17 @@
   "description": "Capability for the main window and plugin windows",
   "windows": [
     "main",
-    "plugin-*"
+    "plugin-*",
+    "editor-*"
   ],
   "permissions": [
     "core:default",
     "opener:default",
     "dialog:default",
-    "core:event:default"
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "updater:default",
+    "process:allow-restart"
   ]
 }

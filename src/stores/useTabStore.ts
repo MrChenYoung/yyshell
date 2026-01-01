@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 
-export type TabType = 'terminal' | 'sftp' | 'welcome';
+export type TabType = 'terminal' | 'sftp' | 'welcome' | 'editor';
 
 // Host info for quick connections (not saved to server list)
 export interface QuickConnectInfo {
@@ -18,6 +18,14 @@ export interface Tab {
     type: TabType;
     // For quick connections that are not in server list
     quickConnectInfo?: QuickConnectInfo;
+    // For editor tabs
+    editorInfo?: {
+        connectionId: string;
+        filePath: string;
+        fileName: string;
+    };
+    // Track unsaved changes for editor tabs
+    hasUnsavedChanges?: boolean;
 }
 
 // Saved tab structure (without sensitive info like passwords)
@@ -74,9 +82,16 @@ export const useTabStore = create<TabState>((set, get) => ({
                         password: undefined, // Password not persisted for security
                     } : undefined,
                 }));
+                // Validate activeTabId - if it points to a non-existent tab (e.g., an editor tab that wasn't saved),
+                // fall back to the last server tab
+                let validActiveTabId = storage.activeTabId;
+                if (validActiveTabId && !restoredTabs.find(t => t.id === validActiveTabId)) {
+                    // activeTabId points to a non-existent tab, use the last restored tab instead
+                    validActiveTabId = restoredTabs.length > 0 ? restoredTabs[restoredTabs.length - 1].id : null;
+                }
                 set({
                     tabs: restoredTabs,
-                    activeTabId: storage.activeTabId,
+                    activeTabId: validActiveTabId,
                     isLoaded: true
                 });
             } else {

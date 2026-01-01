@@ -27,6 +27,7 @@ ssh2 = "0.9"
 russh = "0.48"
 russh-keys = "0.48"
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 tauri-plugin-dialog = "2.4.2"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
@@ -47,4 +48,8 @@ async-trait = "0.1"
 flate2 = "1"
 tar = "0.4"
 urlencoding = "2"
+
+# Updater plugin
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 

@@ -9,6 +9,7 @@ interface FontSettings {
 }
 
 export type ThemeMode = 'light' | 'dark' | 'system';
+export type FileEditorMode = 'panel' | 'tab' | 'window';
 
 interface BackendSettings {
     fonts: {
@@ -25,11 +26,13 @@ interface SettingsState {
     fonts: FontSettings;
     theme: ThemeMode;
     idleTimeoutMinutes: number;  // 0 = never disconnect, otherwise minutes
+    fileEditorMode: FileEditorMode;  // File editor display mode
     isLoading: boolean;
     setFontSize: (area: keyof FontSettings, size: number) => void;
     resetFonts: () => void;
     setTheme: (theme: ThemeMode) => void;
     setIdleTimeout: (minutes: number) => void;
+    setFileEditorMode: (mode: FileEditorMode) => void;
     loadSettings: () => Promise<void>;
 }
 
@@ -88,6 +91,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     fonts: { ...defaultFonts },
     theme: 'dark',
     idleTimeoutMinutes: 30,  // Default 30 minutes
+    fileEditorMode: (localStorage.getItem('yyshell_file_editor_mode') as FileEditorMode) || 'panel',  // Default panel mode
     isLoading: true,
 
     loadSettings: async () => {
@@ -131,6 +135,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     setIdleTimeout: (minutes) => {
         set({ idleTimeoutMinutes: minutes });
         saveToBackend({ fonts: get().fonts, theme: get().theme, idleTimeoutMinutes: minutes });
+    },
+
+    setFileEditorMode: (mode) => {
+        set({ fileEditorMode: mode });
+        localStorage.setItem('yyshell_file_editor_mode', mode);
     },
 }));
 

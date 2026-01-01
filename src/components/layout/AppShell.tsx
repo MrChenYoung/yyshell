@@ -1,5 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from "react";
-import { Server, GripVertical, FolderOpen, Zap, Cable, Puzzle, FileCode2 } from "lucide-react";
+import { Server, GripVertical, FolderOpen, Zap, Cable, Puzzle, FileCode2, X, ChevronUp, ChevronDown } from "lucide-react";
 import {
     Tooltip,
     TooltipContent,
@@ -14,16 +14,19 @@ import { TerminalView } from "@/components/terminal/TerminalView";
 import { SystemMonitor } from "@/components/monitor/SystemMonitor";
 import { ServerList } from "@/components/sidebar/ServerList";
 import { FileManager } from "@/components/files/FileManager";
+import { FileEditor } from "@/components/files/FileEditor";
 import { CommandPanel } from "@/components/commands/CommandPanel";
 import { TabBar } from "@/components/terminal/TabBar";
 import { PortForwardPanel } from "@/components/terminal/PortForwardPanel";
 import { useTabStore, Tab } from "@/stores/useTabStore";
 import { ServerConfig, useServerStore } from "@/stores/useServerStore";
 import { usePluginStore } from "@/stores/usePluginStore";
+import { useBottomPanelEditorStore, EditorTab } from "@/stores/useBottomPanelEditorStore";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { PluginCenter } from "@/components/plugins/PluginCenter";
 import { ScriptPanel } from "@/components/scripts/ScriptPanel";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
 // Resizable divider component
 interface DividerProps {
@@ -138,6 +141,15 @@ export function AppShell() {
     const { tabs, activeTabId, addTab, setActiveTab } = useTabStore();
     const { servers, setActiveServer } = useServerStore();
     const { loadPlugins, plugins } = usePluginStore();
+    const {
+        tabs: editorTabs,
+        activeTabId: activeEditorTabId,
+        isDrawerExpanded,
+        toggleDrawer,
+        setActiveTab: setActiveEditorTab,
+        closeTab: closeEditorTab,
+        setTabHasChanges,
+    } = useBottomPanelEditorStore();
 
     // Filter to only show installed and enabled plugins
     const enabledPlugins = plugins.filter(p => p.enabled);
@@ -147,6 +159,47 @@ export function AppShell() {
     const [monitorHeight, setMonitorHeight] = useState(460);
     const [fileManagerHeight, setFileManagerHeight] = useState(360);
     const [pluginCenterOpen, setPluginCenterOpen] = useState(false);
+
+    // Track last active server tab to keep FileManager stable when switching to editor tabs
+    const [lastServerTabId, setLastServerTabId] = useState<string | null>(null);
+
+    // Update lastServerTabId when a non-editor tab becomes active
+    useEffect(() => {
+        if (activeTabId) {
+            const activeTab = tabs.find(t => t.id === activeTabId);
+            if (activeTab && activeTab.type !== 'editor') {
+                setLastServerTabId(activeTabId);
+            }
+        }
+    }, [activeTabId, tabs]);
+
+    // Use lastServerTabId for FileManager to prevent reload when switching tabs
+    const fileManagerConnectionId = lastServerTabId ? `conn-${lastServerTabId}` : null;
+
+    // Editor tab close confirmation state (for bottom drawer)
+    const [tabToClose, setTabToClose] = useState<EditorTab | null>(null);
+
+    // Main tab bar editor close confirmation state
+    const [mainTabToClose, setMainTabToClose] = useState<Tab | null>(null);
+
+    // Handle editor tab close with unsaved changes check
+    const handleCloseEditorTab = useCallback((tab: EditorTab) => {
+        if (tab.hasChanges) {
+            setTabToClose(tab);
+        } else {
+            closeEditorTab(tab.id);
+        }
+    }, [closeEditorTab]);
+
+    // Handle main tab bar editor close with unsaved changes check
+    const handleCloseMainEditorTab = useCallback((tab: Tab) => {
+        if (tab.hasUnsavedChanges) {
+            setMainTabToClose(tab);
+        } else {
+            const { removeTab } = useTabStore.getState();
+            removeTab(tab.id);
+        }
+    }, []);
 
     // Load plugins on mount
     useEffect(() => {
@@ -327,22 +380,39 @@ export function AppShell() {
                                     key={tab.id}
                                     className={tab.id === activeTabId ? 'h-full' : 'hidden'}
                                 >
-                                    <TerminalView
-                                        tabId={tab.id}
-                                        serverInfo={getServerInfoForTab(tab)}
-                                    />
+                                    {tab.type === 'editor' && tab.editorInfo ? (
+                                        <FileEditor
+                                            connectionId={tab.editorInfo.connectionId}
+                                            filePath={tab.editorInfo.filePath}
+                                            fileName={tab.editorInfo.fileName}
+                                            mode="panel"
+                                            onClose={() => handleCloseMainEditorTab(tab)}
+                                            onHasChangesChange={(hasChanges) => {
+                                                // Update tab's hasUnsavedChanges state
+                                                const { updateTab } = useTabStore.getState();
+                                                updateTab(tab.id, { hasUnsavedChanges: hasChanges });
+                                            }}
+                                        />
+                                    ) : (
+                                        <TerminalView
+                                            tabId={tab.id}
+                                            serverInfo={getServerInfoForTab(tab)}
+                                        />
+                                    )}
                                 </div>
                             ))
                         )}
                     </div>
                 </div>
 
-                {/* Vertical Divider for File Manager */}
-                <ResizeDivider direction="vertical" onResize={handleFileManagerResize} />
+                {/* Vertical Divider for File Manager - hidden when editor tab is active */}
+                <div className={tabs.find(t => t.id === activeTabId)?.type === 'editor' ? 'hidden' : ''}>
+                    <ResizeDivider direction="vertical" onResize={handleFileManagerResize} />
+                </div>
 
-                {/* BOTTOM PANEL - File Manager & Commands */}
+                {/* BOTTOM PANEL - File Manager & Commands - hidden when editor tab is active */}
                 <div
-                    className="flex-shrink-0 flex flex-col bg-card border-t border-border/50"
+                    className={`flex-shrink-0 flex flex-col bg-card border-t border-border/50 relative ${tabs.find(t => t.id === activeTabId)?.type === 'editor' ? 'hidden' : ''}`}
                     style={{ height: fileManagerHeight }}
                 >
                     <Tabs defaultValue="files" className="h-full flex flex-col">
@@ -379,7 +449,7 @@ export function AppShell() {
                             </TabsList>
                         </div>
                         <TabsContent forceMount value="files" className="flex-1 m-0 overflow-hidden data-[state=inactive]:hidden">
-                            <FileManager connectionId={activeTabId ? `conn-${activeTabId}` : null} />
+                            <FileManager connectionId={fileManagerConnectionId} />
                         </TabsContent>
                         <TabsContent forceMount value="commands" className="flex-1 m-0 overflow-hidden data-[state=inactive]:hidden">
                             <CommandPanel
@@ -409,11 +479,121 @@ export function AppShell() {
                             <PortForwardPanel connectionId={activeTabId ? `conn-${activeTabId}` : null} />
                         </TabsContent>
                     </Tabs>
+
+                    {/* Multi-tab Editor Drawer - covers entire bottom panel when open */}
+                    {editorTabs.length > 0 && (
+                        <div className={`absolute inset-0 z-20 bg-card flex flex-col transition-all duration-300 ease-out animate-in slide-in-from-bottom ${isDrawerExpanded ? '' : 'translate-y-[calc(100%-32px)]'}`}>
+                            {/* Drawer Tab Bar */}
+                            <div className="flex items-center h-8 border-b border-border/50 bg-muted/30 flex-shrink-0">
+                                {/* Collapse/Expand Toggle */}
+                                <button
+                                    onClick={toggleDrawer}
+                                    className="h-full px-2 hover:bg-primary/10 transition-colors flex items-center justify-center"
+                                    title={isDrawerExpanded ? '收起' : '展开'}
+                                >
+                                    {isDrawerExpanded ? (
+                                        <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                                    ) : (
+                                        <ChevronUp className="w-4 h-4 text-muted-foreground" />
+                                    )}
+                                </button>
+                                <div className="w-px h-4 bg-border/50" />
+
+                                {/* Tab List */}
+                                <div className="flex-1 flex items-center overflow-x-auto scrollbar-hide">
+                                    {editorTabs.map(tab => (
+                                        <div
+                                            key={tab.id}
+                                            className={`group flex items-center gap-1 h-full px-3 cursor-pointer border-r border-border/30 transition-colors ${tab.id === activeEditorTabId
+                                                ? 'bg-background text-foreground'
+                                                : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+                                                }`}
+                                            onClick={() => {
+                                                setActiveEditorTab(tab.id);
+                                                if (!isDrawerExpanded) toggleDrawer();
+                                            }}
+                                        >
+                                            <FileCode2 className="w-3.5 h-3.5 flex-shrink-0" />
+                                            <span className="text-xs truncate max-w-24">{tab.name}</span>
+                                            {tab.hasChanges && (
+                                                <span className="text-orange-500 text-[10px]">●</span>
+                                            )}
+                                            <button
+                                                className="ml-1 p-0.5 rounded hover:bg-destructive/20 opacity-0 group-hover:opacity-100 transition-opacity"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleCloseEditorTab(tab);
+                                                }}
+                                            >
+                                                <X className="w-3 h-3" />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Editor Content Area - always mounted, hidden when collapsed */}
+                            <div className={`flex-1 overflow-hidden ${isDrawerExpanded ? '' : 'hidden'}`}>
+                                {editorTabs.map(tab => (
+                                    <div
+                                        key={tab.id}
+                                        className={tab.id === activeEditorTabId ? 'h-full' : 'hidden'}
+                                    >
+                                        <FileEditor
+                                            connectionId={tab.connectionId}
+                                            filePath={tab.path}
+                                            fileName={tab.name}
+                                            mode="panel"
+                                            isActive={tab.id === activeEditorTabId && isDrawerExpanded}
+                                            onClose={() => handleCloseEditorTab(tab)}
+                                            onSave={() => { }}
+                                            onHasChangesChange={(hasChanges) => setTabHasChanges(tab.id, hasChanges)}
+                                        />
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
 
             {/* Plugin Center Dialog */}
             <PluginCenter open={pluginCenterOpen} onOpenChange={setPluginCenterOpen} />
+
+            {/* Editor Tab Close Confirmation Dialog (for bottom drawer) */}
+            <ConfirmDialog
+                open={tabToClose !== null}
+                onOpenChange={(open) => !open && setTabToClose(null)}
+                title="未保存的更改"
+                description={`文件 "${tabToClose?.name}" 有未保存的更改。确定要关闭吗？`}
+                confirmText="不保存关闭"
+                cancelText="取消"
+                variant="danger"
+                onConfirm={() => {
+                    if (tabToClose) {
+                        closeEditorTab(tabToClose.id);
+                        setTabToClose(null);
+                    }
+                }}
+            />
+
+            {/* Main Tab Bar Editor Close Confirmation Dialog */}
+            <ConfirmDialog
+                open={mainTabToClose !== null}
+                onOpenChange={(open) => !open && setMainTabToClose(null)}
+                title="未保存的更改"
+                description={`文件 "${mainTabToClose?.title}" 有未保存的更改。确定要关闭吗？`}
+                confirmText="不保存关闭"
+                cancelText="取消"
+                variant="danger"
+                onConfirm={() => {
+                    if (mainTabToClose) {
+                        const { removeTab } = useTabStore.getState();
+                        removeTab(mainTabToClose.id);
+                        setMainTabToClose(null);
+                    }
+                }}
+            />
         </div>
     );
 }

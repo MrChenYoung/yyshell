@@ -202,6 +202,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
     const connectedRef = useRef(false);
     const wasManuallyDisconnected = useRef(false); // Track if user manually disconnected
     const hasAutoConnected = useRef(false); // Track if auto-connect has run
+    const rendererReady = useRef(false); // Track if xterm renderer is fully initialized
     const { fonts, theme } = useSettingsStore();
     const { setConnectionStatus, activeServerId } = useServerStore();
     const { updateTab, tabs } = useTabStore();
@@ -398,7 +399,22 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
         term.loadAddon(webLinksAddon);
 
         term.open(terminalRef.current);
-        fitAddon.fit();
+
+        // Delay fit() call with double rAF to ensure the renderer is fully initialized
+        // This prevents "undefined is not an object" errors on renderer.dimensions
+        // The double rAF ensures we wait for both the layout calculation and paint phases
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                try {
+                    fitAddon.fit();
+                    rendererReady.current = true;
+                } catch (e) {
+                    // Ignore fit errors during initialization
+                    // Still mark as ready since the terminal is usable
+                    rendererReady.current = true;
+                }
+            });
+        });
 
         term.writeln('\x1b[1;36m╔══════════════════════════════════════╗\x1b[0m');
         term.writeln('\x1b[1;36m║       YYShell Terminal Ready         ║\x1b[0m');
@@ -643,15 +659,29 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
     useEffect(() => {
         if (xtermRef.current) {
             xtermRef.current.options.fontSize = fonts.terminal;
-            fitAddonRef.current?.fit();
+            try {
+                fitAddonRef.current?.fit();
+            } catch (e) {
+                // Ignore fit errors when renderer is not ready
+            }
         }
     }, [fonts.terminal]);
 
     // Auto-connect if serverInfo is provided (only once, and not after manual disconnect)
+    // Wait for renderer to be ready before connecting to avoid dimension errors
     useEffect(() => {
         if (serverInfo && !connected && !connecting && xtermRef.current && !wasManuallyDisconnected.current && !hasAutoConnected.current) {
-            hasAutoConnected.current = true;
-            handleConnect(serverInfo.host, serverInfo.username, serverInfo.password, serverInfo.auth_type, serverInfo.private_key_path);
+            // Check if renderer is ready, if not, wait a bit
+            const attemptConnect = () => {
+                if (rendererReady.current) {
+                    hasAutoConnected.current = true;
+                    handleConnect(serverInfo.host, serverInfo.username, serverInfo.password, serverInfo.auth_type, serverInfo.private_key_path);
+                } else {
+                    // Renderer not ready yet, try again shortly
+                    setTimeout(attemptConnect, 50);
+                }
+            };
+            attemptConnect();
         }
     }, [serverInfo, connected, connecting, handleConnect]);
 
@@ -665,7 +695,11 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
             // Debounce the fit call to allow layout to stabilize
             clearTimeout(resizeTimeout);
             resizeTimeout = setTimeout(() => {
-                fitAddonRef.current?.fit();
+                try {
+                    fitAddonRef.current?.fit();
+                } catch (e) {
+                    // Ignore fit errors when renderer is not ready
+                }
             }, 50);
         });
 
