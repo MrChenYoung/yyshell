@@ -7,7 +7,7 @@ use ssh2::{Session, Sftp};
 use tauri::{AppHandle, Emitter};
 
 pub struct SftpConnection {
-    pub session: Session,
+    pub _session: Session,
     pub sftp: Sftp,
 }
 
@@ -141,7 +141,7 @@ pub async fn init_sftp(
         // Init SFTP
         let sftp = sess.sftp().map_err(|e| e.to_string())?;
 
-        Ok(SftpConnection { session: sess, sftp })
+        Ok(SftpConnection { _session: sess, sftp })
     }).await.map_err(|e| e.to_string())??;
     
     sftp_state.connections.lock().unwrap().insert(id.clone(), Arc::new(Mutex::new(sftp_conn)));

@@ -16,6 +16,7 @@ pub struct PluginState {
 }
 
 /// A loaded plugin instance
+#[allow(dead_code)]
 pub struct PluginInstance {
     pub manifest: PluginManifest,
     store: Mutex<Store<PluginState>>,
@@ -139,16 +140,19 @@ impl PluginRuntime {
     }
 
     /// Check if plugin is loaded
+    #[allow(dead_code)]
     pub fn is_loaded(&self, id: &str) -> bool {
         self.plugins.contains_key(id)
     }
 
     /// Get plugin instance
+    #[allow(dead_code)]
     pub fn get_plugin(&self, id: &str) -> Option<Arc<PluginInstance>> {
         self.plugins.get(id).cloned()
     }
 
     /// List loaded plugins
+    #[allow(dead_code)]
     pub fn list_plugins(&self) -> Vec<String> {
         self.plugins.keys().cloned().collect()
     }

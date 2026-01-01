@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.8] - 2026-01-01
+
+### Added
+- **应用内自动更新** - 支持检查和下载新版本
+  - 启动时自动静默检查更新（3秒延迟）
+  - 设置中新增「版本更新」区域，手动检查更新按钮
+  - 更新弹窗显示版本号、发布日期、更新日志
+  - 下载进度条实时显示
+  - 下载完成后一键重启安装
+
+### Technical
+- 集成 `tauri-plugin-updater` 和 `tauri-plugin-process` 插件
+- 使用 GitHub Releases 作为更新源
+- CI/CD 自动生成签名的更新包
+
 ## [1.0.7] - 2024-12-27
 
 ### Added

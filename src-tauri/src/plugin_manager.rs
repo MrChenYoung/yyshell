@@ -2,7 +2,6 @@
 
 use crate::plugin_runtime::PluginRuntime;
 use crate::plugin_types::*;
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

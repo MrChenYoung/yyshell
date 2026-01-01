@@ -201,6 +201,7 @@ impl PluginError {
         Self::new("PLUGIN_NOT_FOUND", &format!("Plugin '{}' not found", id))
     }
 
+    #[allow(dead_code)]
     pub fn already_installed(id: &str) -> Self {
         Self::new("ALREADY_INSTALLED", &format!("Plugin '{}' is already installed", id))
     }
