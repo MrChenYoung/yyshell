@@ -496,7 +496,6 @@ export function FileManager({ connectionId }: FileManagerProps) {
 
             // Check if this is a connection error - trigger auto-reconnect
             if (isSftpConnectionError(errorMsg) && !skipReconnect) {
-                console.log('[SFTP] Connection error detected, attempting to reconnect...');
                 // Reset initialization state
                 initializedConnectionsRef.current.delete(connectionId);
                 setSftpInitialized(false);
@@ -821,7 +820,6 @@ export function FileManager({ connectionId }: FileManagerProps) {
         // Check if SFTP is still connected by checking sftpInitialized
         // If not initialized, re-init first
         if (!sftpInitialized) {
-            console.log('[SFTP] Not initialized, reconnecting before refresh...');
             setLoading(true);
             setError(null);
 
@@ -864,7 +862,6 @@ export function FileManager({ connectionId }: FileManagerProps) {
 
             // Connection error - try to reconnect
             if (isSftpConnectionError(errorMsg)) {
-                console.log('[SFTP] Connection lost during refresh, reconnecting...');
                 initializedConnectionsRef.current.delete(connectionId);
                 setSftpInitialized(false);
 

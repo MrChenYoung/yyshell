@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { Settings, Plus, Minus, RotateCcw, Sun, Moon, Monitor, Download, Upload, AlertCircle, CheckCircle, Lock, Eye, EyeOff, Server, Zap, Network, History, Plug, FileCode2, FileText } from "lucide-react";
+import { Settings, Plus, Minus, RotateCcw, Sun, Moon, Monitor, Download, Upload, AlertCircle, CheckCircle, Lock, Eye, EyeOff, Server, Zap, Network, History, Plug, FileCode2, FileText, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -174,7 +174,7 @@ import { LogViewer } from "./LogViewer";
 import { UpdateChecker } from "./UpdateChecker";
 
 export function SettingsPopover() {
-    const { resetFonts, theme, setTheme, fonts, loadSettings } = useSettingsStore();
+    const { resetFonts, theme, setTheme, fonts, loadSettings, idleTimeoutMinutes, setIdleTimeout, fileEditorMode, setFileEditorMode } = useSettingsStore();
     const { servers, loadServers } = useServerStore();
     const { quickCommands, loadQuickCommands, categoryOrder, commandOrder, importCommands } = useCommandStore();
     const { groups, expandedGroups } = useGroupStore();
@@ -198,6 +198,8 @@ export function SettingsPopover() {
     const [showRestorePassword, setShowRestorePassword] = useState(false);
     const [restoreResult, setRestoreResult] = useState<{ success: boolean; message: string } | null>(null);
     const [isEncrypted, setIsEncrypted] = useState(false);
+    const [isRestoring, setIsRestoring] = useState(false);
+    const [restoreProgress, setRestoreProgress] = useState('');
 
     // Backup category selection state (all selected by default)
     const [backupCategories, setBackupCategories] = useState({
@@ -243,7 +245,9 @@ export function SettingsPopover() {
                 servers: backupCategories.servers ? servers : null,
                 settings: backupCategories.settings ? {
                     fonts: fonts,
-                    theme: theme
+                    theme: theme,
+                    idleTimeoutMinutes: idleTimeoutMinutes,
+                    fileEditorMode: fileEditorMode
                 } : null,
                 quickCommands: backupCategories.quickCommands ? {
                     commands: quickCommands,
@@ -399,6 +403,9 @@ export function SettingsPopover() {
     const handleRestoreConfirm = async () => {
         if (!restoreData) return;
 
+        setIsRestoring(true);
+        setRestoreProgress('正在解析备份文件...');
+
         try {
             const parsed = JSON.parse(restoreData);
 
@@ -478,8 +485,9 @@ export function SettingsPopover() {
             }
 
             // Restore settings
+            setRestoreProgress('正在恢复设置...');
             if (data.settings) {
-                const { fonts: backupFonts, theme: backupTheme } = data.settings;
+                const { fonts: backupFonts, theme: backupTheme, idleTimeoutMinutes: backupIdleTimeout, fileEditorMode: backupEditorMode } = data.settings;
                 if (backupFonts) {
                     const { setFontSize } = useSettingsStore.getState();
                     if (backupFonts.terminal) setFontSize('terminal', backupFonts.terminal);
@@ -490,11 +498,18 @@ export function SettingsPopover() {
                 if (backupTheme) {
                     setTheme(backupTheme as ThemeMode);
                 }
+                if (typeof backupIdleTimeout === 'number') {
+                    setIdleTimeout(backupIdleTimeout);
+                }
+                if (backupEditorMode) {
+                    setFileEditorMode(backupEditorMode);
+                }
                 restoredItems.push('设置');
             }
 
             // Restore servers (saves passwords to keychain via backend)
             if (data.servers?.length > 0) {
+                setRestoreProgress('正在恢复服务器配置...');
                 try {
                     const { invoke } = await import('@tauri-apps/api/core');
                     await invoke('save_servers', { servers: data.servers });
@@ -506,7 +521,28 @@ export function SettingsPopover() {
                 }
             }
 
+            // Restore groups
+            if (data.groups) {
+                setRestoreProgress('正在恢复服务器分组...');
+                try {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    await invoke('save_groups', {
+                        groups: {
+                            groups: data.groups.groups || ['默认'],
+                            expanded_groups: data.groups.expandedGroups || ['默认']
+                        }
+                    });
+                    // Reload groups to update UI
+                    const { loadGroups } = useGroupStore.getState();
+                    await loadGroups();
+                    restoredItems.push('服务器分组');
+                } catch (groupError) {
+                    console.error('Failed to restore groups:', groupError);
+                }
+            }
+
             // Restore SSH tunnels
+            setRestoreProgress('正在恢复SSH隧道...');
             if (data.sshTunnels) {
                 try {
                     const { invoke } = await import('@tauri-apps/api/core');
@@ -523,6 +559,7 @@ export function SettingsPopover() {
             }
 
             // Restore command history
+            setRestoreProgress('正在恢复命令历史...');
             if (data.commandHistory && typeof data.commandHistory === 'object') {
                 try {
                     const { invoke } = await import('@tauri-apps/api/core');
@@ -557,6 +594,7 @@ export function SettingsPopover() {
             }
 
             // Restore scripts
+            setRestoreProgress('正在恢复脚本...');
             if (data.scripts && data.scripts.scripts && Array.isArray(data.scripts.scripts)) {
                 try {
                     const { invoke } = await import('@tauri-apps/api/core');
@@ -576,10 +614,13 @@ export function SettingsPopover() {
             }
 
             // Reload data
+            setRestoreProgress('正在刷新数据...');
             await loadQuickCommands();
             await loadScripts();
             await loadSettings();
 
+            setIsRestoring(false);
+            setRestoreProgress('');
             setRestoreResult({
                 success: true,
                 message: `已恢复: ${restoredItems.join(', ')}`
@@ -594,6 +635,8 @@ export function SettingsPopover() {
 
         } catch (error) {
             console.error('Restore failed:', error);
+            setIsRestoring(false);
+            setRestoreProgress('');
             setRestoreResult({ success: false, message: `恢复失败: ${error}` });
         }
     };
@@ -876,6 +919,11 @@ export function SettingsPopover() {
                                 )}
                                 {restoreResult.message}
                             </div>
+                        ) : isRestoring ? (
+                            <div className="flex flex-col items-center justify-center py-6 space-y-3">
+                                <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                                <p className="text-sm text-muted-foreground">{restoreProgress || '正在恢复...'}</p>
+                            </div>
                         ) : (
                             <div className="space-y-4">
                                 {isEncrypted && (
@@ -913,7 +961,7 @@ export function SettingsPopover() {
                             </div>
                         )}
                     </div>
-                    {!restoreResult && (
+                    {!restoreResult && !isRestoring && (
                         <DialogFooter>
                             <Button variant="outline" onClick={() => setRestoreDialogOpen(false)}>
                                 取消

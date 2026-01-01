@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.10] - 2026-01-01
+
+### Fixed
+- **备份恢复功能完善**
+  - 修复服务器分组数据恢复缺失的问题
+  - 新增备份/恢复空闲超时设置（idleTimeoutMinutes）
+  - 新增备份/恢复文件编辑模式设置（fileEditorMode）
+  - 恢复操作新增实时进度提示（显示当前恢复步骤）
+
+### Changed
+- 清理调试日志残留（HistoryTab、FileManager 中的 console.log）
+
 ## [1.0.9] - 2026-01-01
 
 ### Fixed

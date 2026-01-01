@@ -20,7 +20,6 @@ export function HistoryTab({ serverId, onExecuteCommand }: HistoryTabProps) {
     // Load history when serverId changes
     useEffect(() => {
         if (serverId) {
-            console.log('HistoryTab: Loading history for serverId:', serverId);
             loadHistory(serverId);
         }
     }, [serverId, loadHistory]);
