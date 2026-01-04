@@ -507,13 +507,30 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
                 setConnectionStatus(serverId, { id: serverId, connected: false });
             }
 
+            // Don't auto-reconnect if disconnected due to idle timeout
+            // (reason contains "空闲超时" from backend)
+            if (event.payload.reason.includes('空闲超时')) {
+                // Cleanup all connection-related resources
+                invoke("sftp_cleanup", { id: connectionId }).catch(() => { });
+                invoke("stop_monitoring", { id: connectionId }).catch(() => { });
+
+                // Invalidate directory cache for this connection
+                // Import at top level is better, but using dynamic import for minimal changes
+                import("@/stores/useDirectoryCacheStore").then(({ useDirectoryCacheStore }) => {
+                    useDirectoryCacheStore.getState().invalidateConnection(connectionId);
+                });
+
+                xtermRef.current?.writeln('\r\n\x1b[1;33m请点击「重新连接」按钮恢复连接\x1b[0m\r\n');
+                return;
+            }
+
             // Only auto-reconnect if we have server info
             if (!serverInfo) {
                 xtermRef.current?.writeln('\r\n\x1b[1;33m请手动重新连接\x1b[0m\r\n');
                 return;
             }
 
-            // Auto-reconnect with retry logic
+            // Auto-reconnect with retry logic (only for network failures, not idle timeout)
             for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
                 xtermRef.current?.writeln(`\r\n\x1b[1;36m🔄 正在尝试重新连接 (${attempt}/${MAX_RETRIES})...\x1b[0m`);
 
@@ -649,6 +666,35 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
             handleForceReconnect.then(unlisten => unlisten());
         };
     }, [tabId, handleConnect]);
+
+    // Listen for SSH reconnect requests from FileManager (SFTP refresh detected disconnection)
+    useEffect(() => {
+        const handleSshReconnectRequest = listen<{ connectionId: string }>('request-ssh-reconnect', async (event) => {
+            // Check if this request is for our connection
+            if (event.payload.connectionId !== connectionId) return;
+
+            // Skip if already connected or connecting
+            if (connectedRef.current || connecting) return;
+
+            // Skip if no server info available
+            if (!serverInfo) {
+                xtermRef.current?.writeln('\r\n\x1b[1;33m无法自动重连：缺少服务器信息\x1b[0m\r\n');
+                return;
+            }
+
+            // Reset manual disconnect flag to allow reconnection
+            wasManuallyDisconnected.current = false;
+
+            xtermRef.current?.writeln('\r\n\x1b[1;36m🔄 SFTP 请求重新连接...\x1b[0m');
+
+            // Trigger reconnection
+            handleConnect(serverInfo.host, serverInfo.username, serverInfo.password, serverInfo.auth_type, serverInfo.private_key_path);
+        });
+
+        return () => {
+            handleSshReconnectRequest.then(unlisten => unlisten());
+        };
+    }, [connectionId, connecting, serverInfo, handleConnect]);
 
     // Sync connected state with ref
     useEffect(() => {

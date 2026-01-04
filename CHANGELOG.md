@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.11] - 2026-01-04
+
+### Added
+- **SFTP 刷新自动重连** - 当连接断开后，点击 SFTP 刷新按钮会自动触发 SSH 重连
+  - 自动恢复 SSH 终端、SFTP 和系统监控
+  - 无需手动点击重新连接按钮
+
+### Fixed
+- **空闲超时断开逻辑完善**
+  - 空闲超时断开后不再自动重连（之前会尝试 3 次自动重连）
+  - 新增 `sftp_cleanup` 后端命令，超时时完整清理 SFTP 连接
+  - 超时断开时同时停止系统监控
+  - 超时断开时清理目录缓存，避免重连后显示过期数据
+
+### Technical
+- 新增 `request-ssh-reconnect` 事件，FileManager 可请求 TerminalView 重连 SSH
+- 优化多服务器连接隔离，各连接独立管理不互相影响
+
 ## [1.0.10] - 2026-01-01
 
 ### Fixed

@@ -1,6 +1,6 @@
 [package]
 name = "yyshell"
-version = "1.0.10"
+version = "1.0.11"
 description = "A modern SSH terminal management tool"
 authors = ["chenhuiyi"]
 edition = "2021"

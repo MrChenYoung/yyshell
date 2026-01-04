@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, emit } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
     Folder, FolderOpen, File, ArrowUp, RefreshCw,
@@ -860,7 +860,7 @@ export function FileManager({ connectionId }: FileManagerProps) {
         } catch (e) {
             const errorMsg = String(e);
 
-            // Connection error - try to reconnect
+            // Connection error - try to reconnect SFTP first
             if (isSftpConnectionError(errorMsg)) {
                 initializedConnectionsRef.current.delete(connectionId);
                 setSftpInitialized(false);
@@ -878,7 +878,16 @@ export function FileManager({ connectionId }: FileManagerProps) {
                     setSelectedFile(null);
                     refreshTreeNode(currentPath);
                 } catch (reconnectError) {
-                    setError(String(reconnectError));
+                    const reconnectErrorMsg = String(reconnectError);
+                    // If SFTP reconnection fails (likely SSH is disconnected),
+                    // request SSH reconnection which will automatically reinitialize SFTP
+                    if (isSSHNotConnectedError(reconnectErrorMsg) || isSftpConnectionError(reconnectErrorMsg)) {
+                        setError("连接已断开，正在尝试重新连接...");
+                        // Request SSH reconnection from TerminalView
+                        emit('request-ssh-reconnect', { connectionId });
+                    } else {
+                        setError(reconnectErrorMsg);
+                    }
                 }
             } else {
                 setError(errorMsg);

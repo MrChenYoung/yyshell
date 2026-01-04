@@ -1,9 +1,9 @@
+use ssh2::{Session, Sftp};
 use std::collections::HashMap;
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::Path;
-use ssh2::{Session, Sftp};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
 pub struct SftpConnection {
@@ -39,27 +39,27 @@ pub struct FileEntry {
     pub is_dir: bool,
     pub size: u64,
     pub mtime: u64,
-    pub perm: u32,  // File permissions (e.g., 0o755)
+    pub perm: u32, // File permissions (e.g., 0o755)
 }
 
 /// Upload progress event payload
 #[derive(Clone, serde::Serialize)]
 pub struct UploadProgressPayload {
-    pub id: String,           // Connection ID
-    pub file_name: String,    // File being uploaded
-    pub uploaded: u64,        // Bytes uploaded so far
-    pub total: u64,           // Total file size
-    pub percent: f32,         // Progress percentage 0-100
+    pub id: String,        // Connection ID
+    pub file_name: String, // File being uploaded
+    pub uploaded: u64,     // Bytes uploaded so far
+    pub total: u64,        // Total file size
+    pub percent: f32,      // Progress percentage 0-100
 }
 
 /// Download progress event payload
 #[derive(Clone, serde::Serialize)]
 pub struct DownloadProgressPayload {
-    pub id: String,           // Connection ID
-    pub file_name: String,    // File being downloaded
-    pub downloaded: u64,      // Bytes downloaded so far
-    pub total: u64,           // Total file size
-    pub percent: f32,         // Progress percentage 0-100
+    pub id: String,        // Connection ID
+    pub file_name: String, // File being downloaded
+    pub downloaded: u64,   // Bytes downloaded so far
+    pub total: u64,        // Total file size
+    pub percent: f32,      // Progress percentage 0-100
 }
 
 #[tauri::command]
@@ -76,7 +76,7 @@ pub async fn init_sftp(
         let russh_creds = russh_state.credentials.lock().unwrap();
         let russh_keys: Vec<_> = russh_creds.keys().collect();
         log::debug!("[SFTP:{}] Russh credential keys: {:?}", id, russh_keys);
-        
+
         if let Some(c) = russh_creds.get(&id) {
             log::info!("[SFTP:{}] Found credentials in russh state", id);
             super::ssh::StoredCredentials {
@@ -93,12 +93,12 @@ pub async fn init_sftp(
             let ssh_creds = state.credentials.lock().unwrap();
             let ssh_keys: Vec<_> = ssh_creds.keys().collect();
             log::debug!("[SFTP:{}] ssh2 credential keys: {:?}", id, ssh_keys);
-            
+
             match ssh_creds.get(&id) {
                 Some(c) => {
                     log::info!("[SFTP:{}] Found credentials in ssh2 state", id);
                     c.clone()
-                },
+                }
                 None => {
                     log::error!("[SFTP:{}] No credentials found in either state", id);
                     return Err("No credentials found for this connection".into());
@@ -110,7 +110,8 @@ pub async fn init_sftp(
     // Run blocking SFTP connection in background thread
     let sftp_conn = tokio::task::spawn_blocking(move || -> Result<SftpConnection, String> {
         // Connect
-        let tcp = TcpStream::connect(format!("{}:{}", creds.host, creds.port)).map_err(|e| e.to_string())?;
+        let tcp = TcpStream::connect(format!("{}:{}", creds.host, creds.port))
+            .map_err(|e| e.to_string())?;
         let mut sess = Session::new().unwrap();
         sess.set_tcp_stream(tcp);
         sess.handshake().map_err(|e| e.to_string())?;
@@ -118,22 +119,25 @@ pub async fn init_sftp(
         // Auth based on type
         match creds.auth_type.as_str() {
             "Key" => {
-                let key_path = creds.private_key_path.as_ref().ok_or("Private key path not provided")?;
+                let key_path = creds
+                    .private_key_path
+                    .as_ref()
+                    .ok_or("Private key path not provided")?;
                 let path = std::path::Path::new(key_path);
                 sess.userauth_pubkey_file(&creds.username, None, path, creds.password.as_deref())
                     .map_err(|e| format!("Key authentication failed: {}", e))?;
-            },
+            }
             "Agent" => {
                 sess.userauth_agent(&creds.username)
                     .map_err(|e| format!("SSH Agent authentication failed: {}", e))?;
-            },
+            }
             _ => {
                 let pwd = creds.password.as_ref().ok_or("Password not provided")?;
                 sess.userauth_password(&creds.username, pwd)
                     .map_err(|e| format!("Password authentication failed: {}", e))?;
             }
         }
-        
+
         if !sess.authenticated() {
             return Err("SFTP Auth failed".into());
         }
@@ -141,14 +145,50 @@ pub async fn init_sftp(
         // Init SFTP
         let sftp = sess.sftp().map_err(|e| e.to_string())?;
 
-        Ok(SftpConnection { _session: sess, sftp })
-    }).await.map_err(|e| e.to_string())??;
-    
-    sftp_state.connections.lock().unwrap().insert(id.clone(), Arc::new(Mutex::new(sftp_conn)));
+        Ok(SftpConnection {
+            _session: sess,
+            sftp,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    sftp_state
+        .connections
+        .lock()
+        .unwrap()
+        .insert(id.clone(), Arc::new(Mutex::new(sftp_conn)));
     // Initialize cancel flags for this connection
-    sftp_state.upload_cancelled.lock().unwrap().insert(id.clone(), Arc::new(AtomicBool::new(false)));
-    sftp_state.download_cancelled.lock().unwrap().insert(id, Arc::new(AtomicBool::new(false)));
-    
+    sftp_state
+        .upload_cancelled
+        .lock()
+        .unwrap()
+        .insert(id.clone(), Arc::new(AtomicBool::new(false)));
+    sftp_state
+        .download_cancelled
+        .lock()
+        .unwrap()
+        .insert(id, Arc::new(AtomicBool::new(false)));
+
+    Ok(())
+}
+
+/// Cleanup SFTP connection for a given ID
+/// Called when SSH terminal is disconnected (e.g., idle timeout)
+#[tauri::command]
+pub async fn sftp_cleanup(
+    sftp_state: tauri::State<'_, SftpState>,
+    id: String,
+) -> Result<(), String> {
+    log::info!("[SFTP:{}] Cleaning up SFTP connection", id);
+
+    // Remove connection
+    sftp_state.connections.lock().unwrap().remove(&id);
+
+    // Remove cancel flags
+    sftp_state.upload_cancelled.lock().unwrap().remove(&id);
+    sftp_state.download_cancelled.lock().unwrap().remove(&id);
+
     Ok(())
 }
 
@@ -171,14 +211,20 @@ pub async fn sftp_list_dir(
     let entries = tokio::task::spawn_blocking(move || -> Result<Vec<FileEntry>, String> {
         let conn = conn_arc.lock().unwrap();
         let path = Path::new(&path);
-        
+
         let mut entries = Vec::new();
         match conn.sftp.readdir(path) {
             Ok(list) => {
                 for (path_buf, stat) in list {
-                    let name = path_buf.file_name().unwrap_or_default().to_string_lossy().to_string();
-                    if name == "." || name == ".." { continue; }
-                    
+                    let name = path_buf
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    if name == "." || name == ".." {
+                        continue;
+                    }
+
                     entries.push(FileEntry {
                         name,
                         is_dir: stat.is_dir(),
@@ -187,10 +233,10 @@ pub async fn sftp_list_dir(
                         perm: stat.perm.unwrap_or(0),
                     });
                 }
-            },
+            }
             Err(e) => return Err(e.to_string()),
         }
-        
+
         // Sort: directories first, then files
         entries.sort_by(|a, b| {
             if a.is_dir == b.is_dir {
@@ -199,9 +245,11 @@ pub async fn sftp_list_dir(
                 b.is_dir.cmp(&a.is_dir)
             }
         });
-        
+
         Ok(entries)
-    }).await.map_err(|e| e.to_string())??;
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     Ok(entries)
 }
@@ -224,7 +272,9 @@ pub async fn sftp_mkdir(
         let conn = conn_arc.lock().unwrap();
         let path = Path::new(&path);
         conn.sftp.mkdir(path, 0o755).map_err(|e| e.to_string())
-    }).await.map_err(|e| e.to_string())??;
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     Ok(())
 }
@@ -249,7 +299,9 @@ pub async fn sftp_create_file(
         // Create empty file with standard permissions
         conn.sftp.create(path).map_err(|e| e.to_string())?;
         Ok(())
-    }).await.map_err(|e| e.to_string())??;
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     Ok(())
 }
@@ -291,16 +343,17 @@ pub async fn sftp_upload_file(
         let cancelled = sftp_state.upload_cancelled.lock().unwrap();
         cancelled.get(&id).cloned()
     };
-    
+
     // Reset cancel flag before starting
     if let Some(ref flag) = cancel_flag {
         flag.store(false, Ordering::SeqCst);
     }
 
     // Read local file content first
-    let file_content = std::fs::read(&local_path).map_err(|e| format!("Failed to read local file: {}", e))?;
+    let file_content =
+        std::fs::read(&local_path).map_err(|e| format!("Failed to read local file: {}", e))?;
     let total_size = file_content.len() as u64;
-    
+
     // Extract file name for progress reporting
     let file_name = Path::new(&local_path)
         .file_name()
@@ -318,11 +371,11 @@ pub async fn sftp_upload_file(
         let conn = conn_arc.lock().unwrap();
         let path = Path::new(&remote_path_clone);
         let mut remote_file = conn.sftp.create(path).map_err(|e| e.to_string())?;
-        
+
         // Chunk size: 64KB for progress updates
         const CHUNK_SIZE: usize = 64 * 1024;
         let mut uploaded: u64 = 0;
-        
+
         for chunk in file_content.chunks(CHUNK_SIZE) {
             // Check if upload was cancelled
             if let Some(ref flag) = cancel_flag {
@@ -333,17 +386,17 @@ pub async fn sftp_upload_file(
                     return Err("Upload cancelled".into());
                 }
             }
-            
+
             remote_file.write_all(chunk).map_err(|e| e.to_string())?;
             uploaded += chunk.len() as u64;
-            
+
             // Calculate progress percentage
             let percent = if total_size > 0 {
                 (uploaded as f32 / total_size as f32) * 100.0
             } else {
                 100.0
             };
-            
+
             // Emit progress event
             let payload = UploadProgressPayload {
                 id: id_clone.clone(),
@@ -352,12 +405,14 @@ pub async fn sftp_upload_file(
                 total: total_size,
                 percent,
             };
-            
+
             let _ = app.emit("sftp-upload-progress", payload);
         }
-        
+
         Ok(())
-    }).await.map_err(|e| e.to_string())?;
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     result
 }
@@ -380,20 +435,24 @@ pub async fn sftp_copy_file(
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         use std::io::{Read, Write};
         let conn = conn_arc.lock().unwrap();
-        
+
         // Read source file
         let source = Path::new(&source_path);
         let mut src_file = conn.sftp.open(source).map_err(|e| e.to_string())?;
         let mut content = Vec::new();
-        src_file.read_to_end(&mut content).map_err(|e| e.to_string())?;
-        
+        src_file
+            .read_to_end(&mut content)
+            .map_err(|e| e.to_string())?;
+
         // Write to destination
         let dest = Path::new(&dest_path);
         let mut dest_file = conn.sftp.create(dest).map_err(|e| e.to_string())?;
         dest_file.write_all(&content).map_err(|e| e.to_string())?;
-        
+
         Ok(())
-    }).await.map_err(|e| e.to_string())??;
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     Ok(())
 }
@@ -416,7 +475,9 @@ pub async fn sftp_remove_file(
         let conn = conn_arc.lock().unwrap();
         let path = Path::new(&path);
         conn.sftp.unlink(path).map_err(|e| e.to_string())
-    }).await.map_err(|e| e.to_string())??;
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     Ok(())
 }
@@ -465,22 +526,22 @@ pub async fn sftp_download_file(
         use std::io::{Read, Write};
         let conn = conn_arc.lock().unwrap();
         let path = Path::new(&remote_path);
-        
+
         // Get file size first
         let stat = conn.sftp.stat(path).map_err(|e| e.to_string())?;
         let total_size = stat.size.unwrap_or(0);
-        
+
         let mut file = conn.sftp.open(path).map_err(|e| e.to_string())?;
-        
+
         // Create local file
         let mut local_file = std::fs::File::create(&local_path_clone)
             .map_err(|e| format!("Failed to create local file: {}", e))?;
-        
+
         // Chunk size: 64KB for progress updates
         const CHUNK_SIZE: usize = 64 * 1024;
         let mut buffer = vec![0u8; CHUNK_SIZE];
         let mut downloaded: u64 = 0;
-        
+
         loop {
             // Check for cancellation before reading
             if let Some(ref flag) = cancel_flag {
@@ -496,17 +557,19 @@ pub async fn sftp_download_file(
             if bytes_read == 0 {
                 break;
             }
-            
-            local_file.write_all(&buffer[..bytes_read]).map_err(|e| e.to_string())?;
+
+            local_file
+                .write_all(&buffer[..bytes_read])
+                .map_err(|e| e.to_string())?;
             downloaded += bytes_read as u64;
-            
+
             // Calculate progress percentage
             let percent = if total_size > 0 {
                 (downloaded as f32 / total_size as f32) * 100.0
             } else {
                 100.0
             };
-            
+
             // Emit progress event
             let payload = DownloadProgressPayload {
                 id: id_clone.clone(),
@@ -515,12 +578,14 @@ pub async fn sftp_download_file(
                 total: total_size,
                 percent,
             };
-            
+
             let _ = app.emit("sftp-download-progress", payload);
         }
-        
+
         Ok(())
-    }).await.map_err(|e| e.to_string())?;
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     result
 }
@@ -571,13 +636,13 @@ pub async fn sftp_download_folder(
 
     let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
         use std::io::{Read, Write};
-        
+
         // Create local folder
         std::fs::create_dir_all(&local_path)
             .map_err(|e| format!("Failed to create local folder: {}", e))?;
 
         let conn = conn_arc.lock().unwrap();
-        
+
         // Recursive function to download folder contents
         fn download_recursive(
             conn: &SftpConnection,
@@ -596,7 +661,7 @@ pub async fn sftp_download_folder(
 
             // List directory contents
             let entries = conn.sftp.readdir(sftp_path).map_err(|e| e.to_string())?;
-            
+
             for (path, stat) in entries {
                 // Check cancellation before each file
                 if let Some(ref flag) = cancel_flag {
@@ -605,9 +670,13 @@ pub async fn sftp_download_folder(
                     }
                 }
 
-                let file_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let file_name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 let local_file_path = local_base.join(&file_name);
-                
+
                 if stat.is_dir() {
                     // Create local directory and recurse
                     std::fs::create_dir_all(&local_file_path)
@@ -619,11 +688,11 @@ pub async fn sftp_download_folder(
                     let mut remote_file = conn.sftp.open(&path).map_err(|e| e.to_string())?;
                     let mut local_file = std::fs::File::create(&local_file_path)
                         .map_err(|e| format!("Failed to create file: {}", e))?;
-                    
+
                     const CHUNK_SIZE: usize = 64 * 1024;
                     let mut buffer = vec![0u8; CHUNK_SIZE];
                     let mut downloaded: u64 = 0;
-                    
+
                     loop {
                         // Check cancellation during file download
                         if let Some(ref flag) = cancel_flag {
@@ -633,20 +702,23 @@ pub async fn sftp_download_folder(
                             }
                         }
 
-                        let bytes_read = remote_file.read(&mut buffer).map_err(|e| e.to_string())?;
+                        let bytes_read =
+                            remote_file.read(&mut buffer).map_err(|e| e.to_string())?;
                         if bytes_read == 0 {
                             break;
                         }
-                        
-                        local_file.write_all(&buffer[..bytes_read]).map_err(|e| e.to_string())?;
+
+                        local_file
+                            .write_all(&buffer[..bytes_read])
+                            .map_err(|e| e.to_string())?;
                         downloaded += bytes_read as u64;
-                        
+
                         let percent = if total_size > 0 {
                             (downloaded as f32 / total_size as f32) * 100.0
                         } else {
                             100.0
                         };
-                        
+
                         // Emit progress
                         let payload = DownloadProgressPayload {
                             id: id.to_string(),
@@ -659,12 +731,21 @@ pub async fn sftp_download_folder(
                     }
                 }
             }
-            
+
             Ok(())
         }
 
-        download_recursive(&conn, Path::new(&remote_path), Path::new(&local_path), &app, &cancel_flag, &id_clone)
-    }).await.map_err(|e| e.to_string())?;
+        download_recursive(
+            &conn,
+            Path::new(&remote_path),
+            Path::new(&local_path),
+            &app,
+            &cancel_flag,
+            &id_clone,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     result
 }
@@ -690,7 +771,9 @@ pub async fn sftp_rename(
         let old = Path::new(&old_path);
         let new = Path::new(&new_path);
         conn.sftp.rename(old, new, None).map_err(|e| e.to_string())
-    }).await.map_err(|e| e.to_string())??;
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     Ok(())
 }
@@ -714,7 +797,9 @@ pub async fn sftp_rmdir(
         let conn = conn_arc.lock().unwrap();
         let path = Path::new(&path);
         conn.sftp.rmdir(path).map_err(|e| e.to_string())
-    }).await.map_err(|e| e.to_string())??;
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     Ok(())
 }
@@ -738,13 +823,16 @@ pub async fn sftp_read_file(
         use std::io::Read;
         let conn = conn_arc.lock().unwrap();
         let path = Path::new(&path);
-        
+
         let mut file = conn.sftp.open(path).map_err(|e| e.to_string())?;
         let mut content = String::new();
-        file.read_to_string(&mut content).map_err(|e| e.to_string())?;
-        
+        file.read_to_string(&mut content)
+            .map_err(|e| e.to_string())?;
+
         Ok(content)
-    }).await.map_err(|e| e.to_string())?
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Write text content to remote file
@@ -767,12 +855,15 @@ pub async fn sftp_write_file(
         use std::io::Write;
         let conn = conn_arc.lock().unwrap();
         let path = Path::new(&path);
-        
+
         let mut file = conn.sftp.create(path).map_err(|e| e.to_string())?;
-        file.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
-        
+        file.write_all(content.as_bytes())
+            .map_err(|e| e.to_string())?;
+
         Ok(())
-    }).await.map_err(|e| e.to_string())?
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Read file as base64 (for images and binary files)
@@ -791,18 +882,20 @@ pub async fn sftp_read_file_base64(
     };
 
     tokio::task::spawn_blocking(move || -> Result<String, String> {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
         use std::io::Read;
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
-        
+
         let conn = conn_arc.lock().unwrap();
         let path = Path::new(&path);
-        
+
         let mut file = conn.sftp.open(path).map_err(|e| e.to_string())?;
         let mut content = Vec::new();
         file.read_to_end(&mut content).map_err(|e| e.to_string())?;
-        
+
         Ok(STANDARD.encode(&content))
-    }).await.map_err(|e| e.to_string())?
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Download file to temp directory and open with system default application
@@ -854,22 +947,22 @@ pub async fn sftp_open_with_system(
         use std::io::{Read, Write};
         let conn = conn_arc.lock().unwrap();
         let remote_path = Path::new(&path);
-        
+
         // Get file size first
         let stat = conn.sftp.stat(remote_path).map_err(|e| e.to_string())?;
         let total_size = stat.size.unwrap_or(0);
-        
+
         let mut remote_file = conn.sftp.open(remote_path).map_err(|e| e.to_string())?;
-        
+
         // Create local temp file
         let mut local_file = std::fs::File::create(&temp_path)
             .map_err(|e| format!("Failed to create temp file: {}", e))?;
-        
+
         // Chunk size: 64KB for progress updates
         const CHUNK_SIZE: usize = 64 * 1024;
         let mut buffer = vec![0u8; CHUNK_SIZE];
         let mut downloaded: u64 = 0;
-        
+
         loop {
             // Check for cancellation
             if let Some(ref flag) = cancel_flag {
@@ -885,17 +978,19 @@ pub async fn sftp_open_with_system(
             if bytes_read == 0 {
                 break;
             }
-            
-            local_file.write_all(&buffer[..bytes_read]).map_err(|e| e.to_string())?;
+
+            local_file
+                .write_all(&buffer[..bytes_read])
+                .map_err(|e| e.to_string())?;
             downloaded += bytes_read as u64;
-            
+
             // Calculate progress
             let percent = if total_size > 0 {
                 (downloaded as f32 / total_size as f32) * 100.0
             } else {
                 100.0
             };
-            
+
             // Emit progress event (reuse DownloadProgressPayload structure)
             let payload = DownloadProgressPayload {
                 id: id_clone.clone(),
@@ -906,9 +1001,11 @@ pub async fn sftp_open_with_system(
             };
             let _ = app.emit("sftp-open-progress", payload);
         }
-        
+
         Ok(temp_path_str)
-    }).await.map_err(|e| e.to_string())?;
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     result.map(|local_path| {
         // Open with system default application
