@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.12] - 2026-02-28
+
+### Fixed
+- **修复 SSH 端口未生效问题**
+  - 编辑服务器后，连接/重连流程会正确使用配置端口（不再错误回退到 `22`）
+  - 修复 `force-reconnect` 与 `terminal-reconnect` 事件链路中的端口丢失
+
+### Changed
+- **连接日志增强**
+  - 终端连接、重连、自动重连、SFTP 触发重连提示统一显示 `host:port`
+  - 连接中遮罩文案显示目标 `host:port`，便于排查连接问题
+
 ## [1.0.11] - 2026-01-04
 
 ### Added

@@ -198,6 +198,7 @@ export function SystemMonitor({ compact = false }: SystemMonitorProps) {
             await emit('terminal-reconnect', {
                 tabId: activeTabId,
                 host: activeServer.host,
+                port: activeServer.port,
                 username: activeServer.username,
                 password: activeServer.password || null
             });

@@ -277,10 +277,18 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
         }
     };
 
-    const handleConnect = useCallback(async (connectHost?: string, connectUser?: string, connectPassword?: string, authType?: string, privateKeyPath?: string) => {
+    const handleConnect = useCallback(async (
+        connectHost?: string,
+        connectUser?: string,
+        connectPassword?: string,
+        authType?: string,
+        privateKeyPath?: string,
+        connectPort?: number
+    ) => {
         const h = connectHost || host;
         const u = connectUser || user;
         const p = connectPassword ?? password;
+        const port = connectPort ?? serverInfo?.port ?? 22;
         const auth = authType || serverInfo?.auth_type || 'Password';
         const keyPath = privateKeyPath || serverInfo?.private_key_path;
         const { idleTimeoutMinutes } = useSettingsStore.getState();
@@ -289,10 +297,11 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
 
         setConnecting(true);
         try {
-            xtermRef.current?.writeln(`\r\n\x1b[1;33m正在连接 ${h}...【${auth === 'Password' ? '密码' : auth === 'Key' ? '密钥' : 'Agent'}认证】\x1b[0m`);
+            xtermRef.current?.writeln(`\r\n\x1b[1;33m正在连接 ${h}:${port}...【${auth === 'Password' ? '密码' : auth === 'Key' ? '密钥' : 'Agent'}认证】\x1b[0m`);
             await invoke("russh_connect", {
                 id: connectionId,
                 host: h,
+                port,
                 user: u,
                 password: p || null,
                 authType: auth,
@@ -319,7 +328,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
                 updateTab(tabId, { connectionId });
             }
 
-            xtermRef.current?.writeln(`\r\n\x1b[1;32m已连接！\x1b[0m\r\n`);
+            xtermRef.current?.writeln(`\r\n\x1b[1;32m已连接 ${h}:${port}！\x1b[0m\r\n`);
             xtermRef.current?.focus();
 
             // Emit ssh-connected event for FileManager to reinitialize SFTP
@@ -338,7 +347,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
         } finally {
             setConnecting(false);
         }
-    }, [connectionId, host, user, password, onConnected, onDisconnected, serverId, setConnectionStatus, updateTab, tabId, currentTab?.serverId, serverInfo?.auth_type, serverInfo?.private_key_path]);
+    }, [connectionId, host, user, password, onConnected, onDisconnected, serverId, setConnectionStatus, updateTab, tabId, currentTab?.serverId, serverInfo?.port, serverInfo?.auth_type, serverInfo?.private_key_path]);
 
     // Quick reconnect - disconnect and reconnect
     const handleQuickReconnect = useCallback(async () => {
@@ -358,11 +367,22 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
 
         // Clear terminal for fresh connection 
         xtermRef.current?.clear();
-        xtermRef.current?.writeln('\x1b[1;33m正在重新连接...\x1b[0m\r\n');
+        if (serverInfo) {
+            xtermRef.current?.writeln(`\x1b[1;33m正在重新连接 ${serverInfo.host}:${serverInfo.port || 22}...\x1b[0m\r\n`);
+        } else {
+            xtermRef.current?.writeln('\x1b[1;33m正在重新连接...\x1b[0m\r\n');
+        }
 
         // Reconnect with current server info
         if (serverInfo) {
-            handleConnect(serverInfo.host, serverInfo.username, serverInfo.password, serverInfo.auth_type, serverInfo.private_key_path);
+            handleConnect(
+                serverInfo.host,
+                serverInfo.username,
+                serverInfo.password,
+                serverInfo.auth_type,
+                serverInfo.private_key_path,
+                serverInfo.port
+            );
         } else if (currentTab?.quickConnectInfo) {
             const qc = currentTab.quickConnectInfo;
             handleConnect(qc.host, qc.username, qc.password);
@@ -532,7 +552,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
 
             // Auto-reconnect with retry logic (only for network failures, not idle timeout)
             for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-                xtermRef.current?.writeln(`\r\n\x1b[1;36m🔄 正在尝试重新连接 (${attempt}/${MAX_RETRIES})...\x1b[0m`);
+                xtermRef.current?.writeln(`\r\n\x1b[1;36m🔄 正在尝试重新连接 ${serverInfo.host}:${serverInfo.port || 22} (${attempt}/${MAX_RETRIES})...\x1b[0m`);
 
                 // Wait before retry
                 await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
@@ -541,6 +561,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
                     await invoke("russh_connect", {
                         id: connectionId,
                         host: serverInfo.host,
+                        port: serverInfo.port || 22,
                         user: serverInfo.username,
                         password: serverInfo.password || null,
                         authType: serverInfo.auth_type || 'Password',
@@ -560,7 +581,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
 
                     updateTab(tabId, { connectionId });
 
-                    xtermRef.current?.writeln(`\r\n\x1b[1;32m✓ 重新连接成功！\x1b[0m\r\n`);
+                    xtermRef.current?.writeln(`\r\n\x1b[1;32m✓ 重新连接成功 ${serverInfo.host}:${serverInfo.port || 22}！\x1b[0m\r\n`);
                     xtermRef.current?.focus();
 
                     // Emit ssh-connected event for FileManager to reinitialize SFTP
@@ -587,19 +608,27 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
 
     // Listen for reconnect events from SystemMonitor (user clicked reconnect button)
     useEffect(() => {
-        const handleReconnectEvent = listen<{ tabId: string; host: string; username: string; password: string | null }>('terminal-reconnect', async (event) => {
+        const handleReconnectEvent = listen<{
+            tabId: string;
+            host: string;
+            port?: number;
+            username: string;
+            password: string | null
+        }>('terminal-reconnect', async (event) => {
             if (event.payload.tabId !== tabId) return;
 
             // Reset manual disconnect flag to allow reconnection
             wasManuallyDisconnected.current = false;
 
-            xtermRef.current?.writeln('\r\n\x1b[1;33m正在重新连接...\x1b[0m');
+            const reconnectPort = event.payload.port || serverInfo?.port || 22;
+            xtermRef.current?.writeln(`\r\n\x1b[1;33m正在重新连接 ${event.payload.host}:${reconnectPort}...\x1b[0m`);
 
             try {
                 // Get auth info from serverInfo if available
                 await invoke("russh_connect", {
                     id: connectionId,
                     host: event.payload.host,
+                    port: reconnectPort,
                     user: event.payload.username,
                     password: event.payload.password,
                     authType: serverInfo?.auth_type || 'Password',
@@ -619,13 +648,13 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
 
                 updateTab(tabId, { connectionId });
 
-                xtermRef.current?.writeln('\r\n\x1b[1;32m重新连接成功！\x1b[0m\r\n');
+                xtermRef.current?.writeln(`\r\n\x1b[1;32m重新连接成功 ${event.payload.host}:${reconnectPort}！\x1b[0m\r\n`);
                 xtermRef.current?.focus();
 
                 // Emit ssh-connected event for FileManager to reinitialize SFTP
                 emit('ssh-connected', { connectionId });
             } catch (err) {
-                xtermRef.current?.writeln(`\r\n\x1b[1;31m重新连接失败: ${err}\x1b[0m\r\n`);
+                xtermRef.current?.writeln(`\r\n\x1b[1;31m重新连接失败 ${event.payload.host}:${reconnectPort}: ${err}\x1b[0m\r\n`);
 
                 if (serverId) {
                     setConnectionStatus(serverId, { id: serverId, connected: false, error: String(err) });
@@ -644,6 +673,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
             tabId: string;
             connectionId: string;
             host: string;
+            port?: number;
             username: string;
             password?: string;
             auth_type?: string;
@@ -658,8 +688,8 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
             }
 
             // Trigger reconnection
-            const { host, username, password, auth_type, private_key_path } = event.payload;
-            handleConnect(host, username, password || undefined, auth_type || 'Password', private_key_path);
+            const { host, port, username, password, auth_type, private_key_path } = event.payload;
+            handleConnect(host, username, password || undefined, auth_type || 'Password', private_key_path, port);
         });
 
         return () => {
@@ -685,7 +715,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
             // Reset manual disconnect flag to allow reconnection
             wasManuallyDisconnected.current = false;
 
-            xtermRef.current?.writeln('\r\n\x1b[1;36m🔄 SFTP 请求重新连接...\x1b[0m');
+            xtermRef.current?.writeln(`\r\n\x1b[1;36m🔄 SFTP 请求重新连接 ${serverInfo.host}:${serverInfo.port || 22}...\x1b[0m`);
 
             // Trigger reconnection
             handleConnect(serverInfo.host, serverInfo.username, serverInfo.password, serverInfo.auth_type, serverInfo.private_key_path);
@@ -837,7 +867,7 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
                     <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-10">
                         <div className="flex items-center gap-3 text-white">
                             <Loader2 className="w-6 h-6 animate-spin" />
-                            <span>正在连接 {serverInfo.host}...</span>
+                            <span>正在连接 {serverInfo.host}:{serverInfo.port || 22}...</span>
                         </div>
                     </div>
                 )}
@@ -932,4 +962,3 @@ export function TerminalView({ tabId, serverInfo, onConnected, onDisconnected }:
         </div>
     );
 }
-

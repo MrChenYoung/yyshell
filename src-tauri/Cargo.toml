@@ -1,6 +1,6 @@
 [package]
 name = "yyshell"
-version = "1.0.11"
+version = "1.0.12"
 description = "A modern SSH terminal management tool"
 authors = ["chenhuiyi"]
 edition = "2021"
@@ -52,4 +52,3 @@ urlencoding = "2"
 # Updater plugin
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-

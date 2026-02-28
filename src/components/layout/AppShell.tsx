@@ -235,6 +235,7 @@ export function AppShell() {
                     tabId: existingTab.id,
                     connectionId: `conn-${existingTab.id}`,
                     host: server.host,
+                    port: server.port,
                     username: server.username,
                     password: server.password,
                     auth_type: server.auth_type,
